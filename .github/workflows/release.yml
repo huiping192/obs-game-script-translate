@@ -63,27 +63,71 @@ jobs:
                     Select-Object -First 1
 
           if (-not $obsDll) {
-            # Fallback: any obs.dll
             $obsDll = Get-ChildItem -Recurse -Filter "obs.dll" obs-studio-extracted |
                       Select-Object -First 1
           }
 
+          if (-not $obsDll) {
+            Write-Error "obs.dll not found. Zip contents:"
+            Get-ChildItem -Recurse obs-studio-extracted | Select-Object -First 30 | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
           Write-Host "Found obs.dll: $($obsDll.FullName)"
           $obsBinDir = $obsDll.DirectoryName
+          $defPath = "$obsBinDir\obs.def"
+          $libPath = "$obsBinDir\obs.lib"
 
-          # dumpbin outputs exports; parse into a .def file
-          $raw = & dumpbin /exports $obsDll.FullName
-          $defLines = @("LIBRARY obs", "EXPORTS")
-          foreach ($line in $raw) {
-            # Match export lines: "    <ordinal>    <hint>  <RVA>  <name>"
-            if ($line -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)\s*$') {
-              $defLines += "    $($Matches[1])"
-            }
-          }
-          $defLines | Out-File -FilePath "$obsBinDir\obs.def" -Encoding ASCII
+          # Parse PE export table with Python (no dumpbin text-format dependency)
+          $pyScript = @'
+import struct, sys
+dll, out = sys.argv[1], sys.argv[2]
+with open(dll, 'rb') as f:
+    data = f.read()
+e = struct.unpack_from('<I', data, 0x3c)[0]
+assert data[e:e+4] == b'PE\x00\x00', "Not a PE file"
+coff = e + 4
+ns  = struct.unpack_from('<H', data, coff+2)[0]
+oph = struct.unpack_from('<H', data, coff+16)[0]
+opt = coff + 20
+m   = struct.unpack_from('<H', data, opt)[0]
+exp_rva = struct.unpack_from('<I', data, opt + (112 if m == 0x20b else 96))[0]
+secs = opt + oph
+def r2o(rva):
+    for i in range(ns):
+        s=secs+i*40
+        va=struct.unpack_from('<I',data,s+12)[0]
+        vs=struct.unpack_from('<I',data,s+16)[0]
+        ro=struct.unpack_from('<I',data,s+20)[0]
+        if va<=rva<va+vs: return rva-va+ro
+    raise ValueError(f'unmapped RVA 0x{rva:x}')
+eo  = r2o(exp_rva)
+nn  = struct.unpack_from('<I', data, eo+24)[0]
+nro = struct.unpack_from('<I', data, eo+32)[0]
+no  = r2o(nro)
+names = []
+for i in range(nn):
+    nr  = struct.unpack_from('<I', data, no+i*4)[0]
+    noo = r2o(nr)
+    end = data.index(b'\x00', noo)
+    names.append(data[noo:end].decode())
+with open(out, 'w') as f:
+    f.write('LIBRARY obs\nEXPORTS\n')
+    for n in names:
+        f.write(f'    {n}\n')
+print(f'Generated {out} with {len(names)} exports')
+'@
+          $pyScript | Out-File -FilePath "$env:TEMP\gen_def.py" -Encoding UTF8
+          python "$env:TEMP\gen_def.py" $obsDll.FullName $defPath
+          if ($LASTEXITCODE -ne 0) { Write-Error "PE parsing failed"; exit 1 }
+
+          $cnt = (Select-String -Path $defPath -Pattern '^\s+\w').Count
+          Write-Host "obs.def: $cnt exports"
+          if ($cnt -eq 0) { Write-Error "obs.def is empty — PE parsing produced no exports"; exit 1 }
 
           # Create import library
-          lib /def:"$obsBinDir\obs.def" /out:"$obsBinDir\obs.lib" /machine:x64
+          lib /def:$defPath /out:$libPath /machine:x64
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
           # Compute OBS root (grandparent of bin/64bit/)
           $obsRoot = $obsDll.Directory.Parent.Parent.FullName
