@@ -432,7 +432,7 @@ static obs_properties_t *translate_get_properties(void *priv)
     }, src_list);
 
     obs_properties_add_text(props, "api_key",
-                            "Anthropic API Key（留空则读取 ANTHROPIC_API_KEY 环境变量）",
+                            "Anthropic API Key（必填）",
                             OBS_TEXT_PASSWORD);
     obs_properties_add_text(props, "hotkey_hint",
                             "快捷键提示：在 OBS 设置 → 快捷键 中搜索「翻译游戏画面」可自定义按键（默认 F9）",

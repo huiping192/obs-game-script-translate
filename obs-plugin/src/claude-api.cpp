@@ -147,13 +147,9 @@ std::string claude_analyze_image_data(const std::vector<uint8_t> &image_data,
                                       const std::string &media_type,
                                       const std::string &api_key_arg)
 {
-    std::string api_key = api_key_arg;
-    if (api_key.empty()) {
-        const char *env = getenv("ANTHROPIC_API_KEY");
-        if (env) api_key = env;
-    }
-    if (api_key.empty())
-        return "错误：未设置 Anthropic API Key（属性面板或环境变量 ANTHROPIC_API_KEY）";
+    if (api_key_arg.empty())
+        return "错误：请在属性面板中设置 Anthropic API Key";
+    const std::string &api_key = api_key_arg;
 
     if (image_data.empty())
         return "错误：图像数据为空";

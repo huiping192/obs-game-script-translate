@@ -63,4 +63,4 @@ cmake --build obs-plugin/build --target install-plugin
 
 ## API Key 配置
 
-属性面板的"Anthropic API Key"字段输入，留空则回退到 `ANTHROPIC_API_KEY` 环境变量。
+属性面板的"Anthropic API Key"字段必填，不设置则无法翻译。
