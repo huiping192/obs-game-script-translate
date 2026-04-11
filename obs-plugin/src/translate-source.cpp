@@ -18,7 +18,8 @@ struct TranslateData {
     obs_source_t *source;
 
     std::string api_key;
-    std::string llm_provider;  // "claude" | "glm"
+    std::string llm_provider;     // "claude" | "glm"
+    std::string target_language;  // "zh" | "ja" | "en"
     std::mutex  result_mutex;
     std::string translation;
     std::atomic<bool> translating{false};
@@ -60,7 +61,8 @@ static void clear_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, bool
 static void start_translation_worker(TranslateData *data,
                                      std::vector<uint8_t> jpeg,
                                      std::string api_key,
-                                     std::string llm_provider)
+                                     std::string llm_provider,
+                                     std::string target_language)
 {
     data->translating.store(true);
     if (data->worker.joinable())
@@ -69,11 +71,12 @@ static void start_translation_worker(TranslateData *data,
     obs_source_t *source = data->source;
 
     data->worker = std::thread([data, source,
-                                jpeg         = std::move(jpeg),
-                                api_key      = std::move(api_key),
-                                llm_provider = std::move(llm_provider)]() mutable {
+                                jpeg            = std::move(jpeg),
+                                api_key         = std::move(api_key),
+                                llm_provider    = std::move(llm_provider),
+                                target_language = std::move(target_language)]() mutable {
         auto t0 = std::chrono::steady_clock::now();
-        std::string result = analyze_image_data(jpeg, "image/jpeg", api_key, llm_provider);
+        std::string result = analyze_image_data(jpeg, "image/jpeg", api_key, llm_provider, target_language);
         auto t1 = std::chrono::steady_clock::now();
         long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
@@ -142,7 +145,7 @@ static void on_raw_video(void *param, struct video_data *frame)
     blog(LOG_INFO, "[game-translator] 捕获当前场景 %zu bytes，encode 耗时 %lld ms，开始翻译",
          jpeg.size(),
          std::chrono::duration_cast<std::chrono::milliseconds>(enc1 - enc0).count());
-    start_translation_worker(data, std::move(jpeg), std::move(api_key), data->llm_provider);
+    start_translation_worker(data, std::move(jpeg), std::move(api_key), data->llm_provider, data->target_language);
 }
 
 // ── Specific source: texrender frame capture ───────────────────────────────
@@ -230,7 +233,7 @@ static std::vector<uint8_t> capture_source_frame(TranslateData *data)
 
 static const char *translate_get_name(void *)
 {
-    return "Game Translator";
+    return obs_module_text("SourceName");
 }
 
 static void translate_get_defaults(obs_data_t *settings)
@@ -248,6 +251,7 @@ static void translate_get_defaults(obs_data_t *settings)
     obs_data_release(font_obj);
 
     obs_data_set_default_string(settings, "llm_provider",         "claude");
+    obs_data_set_default_string(settings, "target_language",      "zh");
     obs_data_set_default_int(settings,    "overlay_color",        0xFFFFFFFF);
     obs_data_set_default_int(settings,    "overlay_bg_opacity",   80);
     obs_data_set_default_int(settings,    "overlay_custom_width", 800);
@@ -260,8 +264,10 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     data->source             = source;
     data->api_key            = obs_data_get_string(settings, "api_key");
     data->llm_provider       = obs_data_get_string(settings, "llm_provider");
+    data->target_language    = obs_data_get_string(settings, "target_language");
     data->target_source_name = obs_data_get_string(settings, "target_source");
-    blog(LOG_INFO, "[game-translator] 加载设置: llm_provider=%s", data->llm_provider.c_str());
+    blog(LOG_INFO, "[game-translator] 加载设置: llm_provider=%s target_language=%s",
+         data->llm_provider.c_str(), data->target_language.c_str());
     data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
     data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
     data->auto_clear_seconds = (int)obs_data_get_int(settings, "auto_clear_seconds");
@@ -271,7 +277,7 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     obs_add_raw_video_callback(&vsi, on_raw_video, data);
 
     data->hotkey_id = obs_hotkey_register_source(
-        source, "game_translator_translate", "翻译游戏画面",
+        source, "game_translator_translate", obs_module_text("Hotkey.Translate"),
         translate_hotkey_pressed, data);
 
     // Default F9 if no hotkey saved yet
@@ -288,7 +294,7 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     obs_data_array_release(saved);
 
     data->clear_hotkey_id = obs_hotkey_register_source(
-        source, "game_translator_clear", "清除翻译内容",
+        source, "game_translator_clear", obs_module_text("Hotkey.Clear"),
         clear_hotkey_pressed, data);
 
     // Default F10 if no hotkey saved yet
@@ -352,6 +358,7 @@ static void translate_update(void *priv, obs_data_t *settings)
     std::lock_guard<std::mutex> lock(data->result_mutex);
     data->api_key            = obs_data_get_string(settings, "api_key");
     data->llm_provider       = obs_data_get_string(settings, "llm_provider");
+    data->target_language    = obs_data_get_string(settings, "target_language");
     data->target_source_name = obs_data_get_string(settings, "target_source");
     data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
     data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
@@ -503,9 +510,9 @@ static obs_properties_t *translate_get_properties(void *priv)
 
     // Capture source
     obs_property_t *src_list = obs_properties_add_list(
-        props, "target_source", "捕获源",
+        props, "target_source", obs_module_text("CaptureSource"),
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    obs_property_list_add_string(src_list, "当前场景（推流/录制画面）", "");
+    obs_property_list_add_string(src_list, obs_module_text("CaptureSource.CurrentScene"), "");
     obs_enum_sources([](void *param, obs_source_t *src) -> bool {
         if (obs_source_get_output_flags(src) & OBS_SOURCE_VIDEO) {
             auto *list = static_cast<obs_property_t *>(param);
@@ -516,29 +523,36 @@ static obs_properties_t *translate_get_properties(void *priv)
     }, src_list);
 
     obs_property_t *llm_list = obs_properties_add_list(
-        props, "llm_provider", "翻译模型",
+        props, "llm_provider", obs_module_text("LLMProvider"),
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    obs_property_list_add_string(llm_list, "Claude Sonnet (Anthropic)", "claude");
-    obs_property_list_add_string(llm_list, "GLM-4.6V (智谱 AI)", "glm");
+    obs_property_list_add_string(llm_list, obs_module_text("LLMProvider.Claude"), "claude");
+    obs_property_list_add_string(llm_list, obs_module_text("LLMProvider.GLM"), "glm");
+
+    obs_property_t *lang_list = obs_properties_add_list(
+        props, "target_language", obs_module_text("TargetLanguage"),
+        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    obs_property_list_add_string(lang_list, obs_module_text("TargetLang.Chinese"), "zh");
+    obs_property_list_add_string(lang_list, obs_module_text("TargetLang.Japanese"), "ja");
+    obs_property_list_add_string(lang_list, obs_module_text("TargetLang.English"), "en");
 
     obs_properties_add_text(props, "api_key",
-                            "API Key（必填）",
+                            obs_module_text("APIKey"),
                             OBS_TEXT_PASSWORD);
     obs_properties_add_text(props, "hotkey_hint",
-                            "快捷键提示：在 OBS 设置 → 快捷键 中搜索「翻译」可自定义按键（翻译默认 F9，清除默认 F10）",
+                            obs_module_text("HotkeyHint"),
                             OBS_TEXT_INFO);
 
     // Text overlay appearance
-    obs_properties_add_font(props, "overlay_font", "字体");
-    obs_properties_add_color(props, "overlay_color", "文字颜色");
+    obs_properties_add_font(props, "overlay_font", obs_module_text("OverlayFont"));
+    obs_properties_add_color(props, "overlay_color", obs_module_text("OverlayColor"));
     obs_properties_add_int_slider(props, "auto_clear_seconds",
-                                  "翻译自动消失（秒，0=不消失）", 0, 30, 1);
+                                  obs_module_text("AutoClearSeconds"), 0, 30, 1);
     obs_properties_add_int_slider(props, "overlay_bg_opacity",
-                                  "背景不透明度（%）", 0, 100, 5);
+                                  obs_module_text("BGOpacity"), 0, 100, 5);
     obs_properties_add_int(props, "overlay_custom_width",
-                           "文字换行宽度（像素）", 200, 3840, 10);
+                           obs_module_text("CustomWidth"), 200, 3840, 10);
 
-    obs_properties_add_text(props, "translation_result", "翻译结果（只读参考）",
+    obs_properties_add_text(props, "translation_result", obs_module_text("TranslationResult"),
                             OBS_TEXT_MULTILINE);
 
     return props;
@@ -565,7 +579,7 @@ static void trigger_translate(TranslateData *data)
             return;
         }
         blog(LOG_INFO, "[game-translator] 手动捕获帧 %zu bytes，开始翻译", jpeg.size());
-        start_translation_worker(data, std::move(jpeg), std::move(api_key), data->llm_provider);
+        start_translation_worker(data, std::move(jpeg), std::move(api_key), data->llm_provider, data->target_language);
     }
 }
 

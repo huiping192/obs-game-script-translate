@@ -80,6 +80,9 @@ target_link_libraries(obs-game-translator PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+# ── Locale data ───────────────────────────────────────────────────────────
+set(LOCALE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/locale")
+
 # ── Platform-specific configuration ──────────────────────────────────────
 if(APPLE)
     set(OBS_APP        "/Applications/OBS.app")
@@ -98,6 +101,16 @@ if(APPLE)
         OUTPUT_NAME              "obs-game-translator"
         INSTALL_RPATH            "${OBS_FRAMEWORKS}"
         BUILD_RPATH              "${OBS_FRAMEWORKS}"
+    )
+
+    # Copy locale files into the .plugin bundle so OBS can find them
+    add_custom_command(TARGET obs-game-translator POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_DIR:obs-game-translator>/Contents/Resources/locale"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${LOCALE_SRC_DIR}"
+                "$<TARGET_BUNDLE_DIR:obs-game-translator>/Contents/Resources/locale"
+        COMMENT "Copying locale files into plugin bundle"
     )
 
     set(OBS_PLUGIN_DEST "$ENV{HOME}/Library/Application Support/obs-studio/plugins")
@@ -126,11 +139,16 @@ elseif(WIN32)
     )
 
     set(OBS_PLUGIN_DEST "$ENV{APPDATA}/obs-studio/plugins/obs-game-translator/bin/64bit")
+    set(OBS_DATA_DEST   "$ENV{APPDATA}/obs-studio/plugins/obs-game-translator/data/locale")
     add_custom_target(install-plugin
         COMMAND ${CMAKE_COMMAND} -E make_directory "${OBS_PLUGIN_DEST}"
         COMMAND ${CMAKE_COMMAND} -E copy
                 "$<TARGET_FILE:obs-game-translator>"
                 "${OBS_PLUGIN_DEST}/obs-game-translator.dll"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${OBS_DATA_DEST}"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${LOCALE_SRC_DIR}"
+                "${OBS_DATA_DEST}"
         DEPENDS obs-game-translator
         COMMENT "Installing plugin to ${OBS_PLUGIN_DEST}"
     )

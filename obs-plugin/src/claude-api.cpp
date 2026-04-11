@@ -7,20 +7,60 @@
 
 using json = nlohmann::json;
 
-static const char *SYSTEM_PROMPT =
-    "你是一位游戏剧情翻译助手。\n\n"
-    "用户会发送游戏截图。请只识别并翻译剧情相关的英文文本，"
-    "包括：NPC 对话、主角台词、旁白、剧情字幕、信件/日记等叙事内容。\n\n"
-    "忽略以下内容，不要翻译：\n"
-    "- UI 控件标签（按钮、菜单项、选项卡名称）\n"
-    "- 系统提示（存档、加载、设置、教程提示）\n"
-    "- HUD 元素（血量、地图、计时器、物品栏标签）\n"
-    "- 固有名词（角色名、地名、技能名、道具名）\n\n"
-    "输出格式要求（严格遵守）：\n"
-    "- 只输出纯文本，禁止使用任何 Markdown 格式\n"
-    "- 不使用 **粗体**、*斜体*、# 标题、--- 分割线、- 列表等标记\n"
-    "- 如果截图中没有需要翻译的剧情文本，直接回复：截图中未检测到剧情文本。\n\n"
-    "只输出翻译内容，不需要其他说明。";
+// Declared by OBS_MODULE_USE_DEFAULT_LOCALE in plugin-main.cpp (C linkage)
+extern "C" const char *obs_module_text(const char *val);
+
+// ── Per-language config ───────────────────────────────────────────────────
+
+struct LangConfig {
+    const char *language_name;    // shown in the system prompt
+    const char *no_text_response; // LLM outputs this when no story text found
+    const char *user_message;     // user turn text sent alongside the screenshot
+};
+
+static const LangConfig &get_lang_config(const std::string &lang)
+{
+    static const LangConfig zh = {
+        "Simplified Chinese (中文)",
+        "截图中未检测到剧情文本。",
+        "请翻译这张游戏截图中的剧情对话内容。"
+    };
+    static const LangConfig ja = {
+        "Japanese (日本語)",
+        "スクリーンショットにストーリーテキストは検出されませんでした。",
+        "このゲームのスクリーンショットにあるストーリーの台詞を翻訳してください。"
+    };
+    static const LangConfig en = {
+        "English",
+        "No story dialogue text detected in screenshot.",
+        "Please translate the story dialogue in this game screenshot."
+    };
+    if (lang == "ja") return ja;
+    if (lang == "en") return en;
+    return zh;
+}
+
+static std::string build_system_prompt(const std::string &target_language)
+{
+    const LangConfig &lc = get_lang_config(target_language);
+    return std::string(
+        "You are a game story translation assistant.\n\n"
+        "The user will send a game screenshot. Identify and translate ONLY "
+        "story-related text (in any language) into ") + lc.language_name + ", "
+        "including: NPC dialogue, protagonist lines, narration, story subtitles, "
+        "letters/journals and other narrative content.\n\n"
+        "Ignore and do NOT translate:\n"
+        "- UI control labels (buttons, menu items, tab names)\n"
+        "- System prompts (save, load, settings, tutorial tips)\n"
+        "- HUD elements (health, map, timer, inventory labels)\n"
+        "- Proper nouns (character names, place names, skill names, item names)\n\n"
+        "Output format requirements (strict):\n"
+        "- Output only plain text, no Markdown formatting whatsoever\n"
+        "- Do not use **bold**, *italic*, # headings, --- dividers, - lists, etc.\n"
+        "- If no translatable story text is found, respond exactly: "
+        + std::string(lc.no_text_response) + "\n\n"
+        "Output only the translation, no other explanation.";
+}
 
 // ── Base64 ────────────────────────────────────────────────────────────────
 
@@ -73,7 +113,7 @@ static std::string do_post(const char *url,
                            const std::string &body_str)
 {
     CURL *curl = curl_easy_init();
-    if (!curl) return "错误：curl_easy_init 失败";
+    if (!curl) return obs_module_text("Error.CurlInitFailed");
 
     std::string response_buf;
     curl_easy_setopt(curl, CURLOPT_URL,           url);
@@ -88,7 +128,7 @@ static std::string do_post(const char *url,
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK)
-        return std::string("网络错误：") + curl_easy_strerror(res);
+        return std::string(obs_module_text("Error.Network")) + curl_easy_strerror(res);
 
     return response_buf;
 }
@@ -97,12 +137,16 @@ static std::string do_post(const char *url,
 
 static std::string call_claude(const std::string &b64,
                                 const char *media_type,
-                                const std::string &api_key)
+                                const std::string &api_key,
+                                const std::string &target_language)
 {
+    const LangConfig &lc = get_lang_config(target_language);
+    std::string system_prompt = build_system_prompt(target_language);
+
     json body = {
         {"model",      "claude-sonnet-4-6"},
         {"max_tokens", 2048},
-        {"system",     SYSTEM_PROMPT},
+        {"system",     system_prompt},
         {"messages", {{
             {"role", "user"},
             {"content", {
@@ -114,7 +158,7 @@ static std::string call_claude(const std::string &b64,
                         {"data",       b64}
                     }}
                 },
-                {{"type", "text"}, {"text", "请翻译这张游戏截图中的剧情对话内容。"}}
+                {{"type", "text"}, {"text", lc.user_message}}
             }}
         }}}
     };
@@ -132,16 +176,16 @@ static std::string call_claude(const std::string &b64,
     try {
         json resp = json::parse(raw);
         if (resp.contains("error") && resp["error"].is_object())
-            return "API 错误：" + resp["error"]["message"].get<std::string>();
+            return std::string(obs_module_text("Error.API")) + resp["error"]["message"].get<std::string>();
         if (resp.contains("content") && resp["content"].is_array()
             && !resp["content"].empty()) {
             auto &first = resp["content"][0];
             if (first.value("type", "") == "text")
                 return first["text"].get<std::string>();
         }
-        return "错误：无法解析 API 响应：" + raw.substr(0, 200);
+        return std::string(obs_module_text("Error.ParseResponse")) + raw.substr(0, 200);
     } catch (const json::exception &e) {
-        return std::string("JSON 解析错误：") + e.what();
+        return std::string(obs_module_text("Error.JSONParse")) + e.what();
     }
 }
 
@@ -149,8 +193,11 @@ static std::string call_claude(const std::string &b64,
 
 static std::string call_glm(const std::string &b64,
                              const char *media_type,
-                             const std::string &api_key)
+                             const std::string &api_key,
+                             const std::string &target_language)
 {
+    const LangConfig &lc = get_lang_config(target_language);
+    std::string system_prompt = build_system_prompt(target_language);
     std::string data_url = std::string("data:") + media_type + ";base64," + b64;
 
     json body = {
@@ -158,7 +205,7 @@ static std::string call_glm(const std::string &b64,
         {"max_tokens", 2048},
         {"thinking",   {{"type", "disabled"}}},
         {"messages", {
-            {{"role", "system"}, {"content", SYSTEM_PROMPT}},
+            {{"role", "system"}, {"content", system_prompt}},
             {
                 {"role", "user"},
                 {"content", {
@@ -166,7 +213,7 @@ static std::string call_glm(const std::string &b64,
                         {"type",      "image_url"},
                         {"image_url", {{"url", data_url}}}
                     },
-                    {{"type", "text"}, {"text", "请翻译这张游戏截图中的剧情对话内容。"}}
+                    {{"type", "text"}, {"text", lc.user_message}}
                 }}
             }
         }}
@@ -184,16 +231,16 @@ static std::string call_glm(const std::string &b64,
     try {
         json resp = json::parse(raw);
         if (resp.contains("error") && resp["error"].is_object())
-            return "API 错误：" + resp["error"]["message"].get<std::string>();
+            return std::string(obs_module_text("Error.API")) + resp["error"]["message"].get<std::string>();
         if (resp.contains("choices") && resp["choices"].is_array()
             && !resp["choices"].empty()) {
             auto &choice = resp["choices"][0];
             if (choice.contains("message") && choice["message"].contains("content"))
                 return choice["message"]["content"].get<std::string>();
         }
-        return "错误：无法解析 API 响应：" + raw.substr(0, 200);
+        return std::string(obs_module_text("Error.ParseResponse")) + raw.substr(0, 200);
     } catch (const json::exception &e) {
-        return std::string("JSON 解析错误：") + e.what();
+        return std::string(obs_module_text("Error.JSONParse")) + e.what();
     }
 }
 
@@ -202,17 +249,18 @@ static std::string call_glm(const std::string &b64,
 std::string analyze_image_data(const std::vector<uint8_t> &image_data,
                                 const std::string &media_type,
                                 const std::string &api_key,
-                                const std::string &provider)
+                                const std::string &provider,
+                                const std::string &target_language)
 {
     if (api_key.empty())
-        return "错误：请在属性面板中设置 API Key";
+        return obs_module_text("Error.NoAPIKey");
     if (image_data.empty())
-        return "错误：图像数据为空";
+        return obs_module_text("Error.EmptyImage");
 
     std::string b64 = base64_encode(image_data);
 
     if (provider == "glm")
-        return call_glm(b64, media_type.c_str(), api_key);
+        return call_glm(b64, media_type.c_str(), api_key, target_language);
 
-    return call_claude(b64, media_type.c_str(), api_key);
+    return call_claude(b64, media_type.c_str(), api_key, target_language);
 }
