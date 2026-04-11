@@ -35,10 +35,11 @@ struct TranslateData {
     obs_hotkey_id hotkey_id = OBS_INVALID_HOTKEY_ID;
 
     // Text overlay rendering
-    obs_source_t *text_source = nullptr;
+    obs_source_t *text_source  = nullptr;
     std::string   pending_text;
-    bool          text_dirty  = false;
-    int           bg_opacity  = 80;  // 0–100 %
+    bool          text_dirty   = false;
+    int           bg_opacity   = 80;    // 0–100 %
+    uint32_t      custom_width = 800;   // fixed source width (pixels)
 };
 
 // Forward declarations
@@ -231,6 +232,7 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     data->api_key            = obs_data_get_string(settings, "api_key");
     data->target_source_name = obs_data_get_string(settings, "target_source");
     data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
+    data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
 
     struct video_scale_info vsi = {};
     vsi.format = VIDEO_FORMAT_BGRA;
@@ -302,6 +304,7 @@ static void translate_update(void *priv, obs_data_t *settings)
     data->api_key            = obs_data_get_string(settings, "api_key");
     data->target_source_name = obs_data_get_string(settings, "target_source");
     data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
+    data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
 
     if (data->text_source) {
         obs_data_t *ts = obs_data_create();
@@ -352,22 +355,20 @@ static void translate_video_render(void *priv, gs_effect_t *)
     if (!data->text_source)
         return;
 
-    // Read dimensions each frame directly from the child source.
+    // Height is content-driven; width is fixed to custom_width.
     // text_ft2_source_v2 computes its size lazily on the first render call,
-    // so we must always call obs_source_video_render to break the chicken-and-egg.
-    uint32_t tw = obs_source_get_width(data->text_source);
+    // so drive a render when th==0 to break the chicken-and-egg.
     uint32_t th = obs_source_get_height(data->text_source);
 
-    if (tw == 0 || th == 0) {
-        // Drive one render so the text source can compute its texture dimensions.
+    if (th == 0) {
         obs_source_video_render(data->text_source);
         return;
     }
 
-    uint32_t total_w = tw + 2 * (uint32_t)OVERLAY_PADDING;
-    uint32_t total_h = th + 2 * (uint32_t)OVERLAY_PADDING;
+    uint32_t total_w = data->custom_width + 2 * (uint32_t)OVERLAY_PADDING;
+    uint32_t total_h = th                 + 2 * (uint32_t)OVERLAY_PADDING;
 
-    // Semi-transparent background rectangle
+    // Semi-transparent background rectangle (full fixed width)
     gs_effect_t *solid       = obs_get_base_effect(OBS_EFFECT_SOLID);
     gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
 
@@ -382,20 +383,22 @@ static void translate_video_render(void *priv, gs_effect_t *)
     }
     gs_blend_state_pop();
 
-    // Text with padding offset
+    // Text left-aligned with padding
     gs_matrix_push();
     gs_matrix_translate3f((float)OVERLAY_PADDING, (float)OVERLAY_PADDING, 0.0f);
     obs_source_video_render(data->text_source);
     gs_matrix_pop();
 }
 
+// Width is fixed to custom_width so the source stays stable in the scene.
+// Height adapts to text content (number of lines).
 static uint32_t translate_get_width(void *priv)
 {
     auto *data = static_cast<TranslateData *>(priv);
     if (!data->text_source)
         return 0;
-    uint32_t tw = obs_source_get_width(data->text_source);
-    return tw > 0 ? tw + 2 * (uint32_t)OVERLAY_PADDING : 0;
+    uint32_t th = obs_source_get_height(data->text_source);
+    return th > 0 ? data->custom_width + 2 * (uint32_t)OVERLAY_PADDING : 0;
 }
 
 static uint32_t translate_get_height(void *priv)
