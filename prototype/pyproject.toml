@@ -1,0 +1,8 @@
+[project]
+name = "game-script-analyzer"
+version = "0.1.0"
+description = "Switch game screenshot English analyzer — Phase 1 prototype"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.40.0",
+]

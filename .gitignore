@@ -1,3 +1,6 @@
+# CMake build directory
+obs-plugin/build/
+
 # Prerequisites
 *.d
 
@@ -39,3 +42,20 @@
 
 # debug information files
 *.dwo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# Test images (add your own screenshots to prototype/samples/ locally)
+prototype/samples/*.png
+prototype/samples/*.jpg
+prototype/samples/*.jpeg
+prototype/samples/*.webp

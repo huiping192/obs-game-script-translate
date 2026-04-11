@@ -1,0 +1,177 @@
+#include "claude-api.h"
+#include <cctype>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <curl/curl.h>
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
+
+// Same system prompt as the Python prototype (prototype/analyze.py:20-26)
+static const char *SYSTEM_PROMPT =
+    "你是一位游戏翻译助手。\n\n"
+    "用户会发送 Switch 游戏截图。请识别截图中所有可见的英文文本"
+    "（对话框、UI 文字、标识、字幕等），并直接输出自然流畅的中文翻译。\n\n"
+    "如果截图中没有英文文本，直接回复：\"截图中未检测到英文文本。\"\n\n"
+    "只输出翻译内容，不需要其他说明。";
+
+// ── Base64 ────────────────────────────────────────────────────────────────
+
+static const char B64_CHARS[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static std::string base64_encode(const std::vector<uint8_t> &data)
+{
+    std::string out;
+    out.reserve(((data.size() + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 2 < data.size(); i += 3) {
+        uint32_t n = ((uint32_t)data[i] << 16)
+                   | ((uint32_t)data[i + 1] << 8)
+                   |  (uint32_t)data[i + 2];
+        out += B64_CHARS[(n >> 18) & 63];
+        out += B64_CHARS[(n >> 12) & 63];
+        out += B64_CHARS[(n >>  6) & 63];
+        out += B64_CHARS[ n        & 63];
+    }
+    if (i + 1 == data.size()) {
+        uint32_t n = (uint32_t)data[i] << 16;
+        out += B64_CHARS[(n >> 18) & 63];
+        out += B64_CHARS[(n >> 12) & 63];
+        out += '=';
+        out += '=';
+    } else if (i + 2 == data.size()) {
+        uint32_t n = ((uint32_t)data[i] << 16) | ((uint32_t)data[i + 1] << 8);
+        out += B64_CHARS[(n >> 18) & 63];
+        out += B64_CHARS[(n >> 12) & 63];
+        out += B64_CHARS[(n >>  6) & 63];
+        out += '=';
+    }
+    return out;
+}
+
+// ── Image media type from extension ──────────────────────────────────────
+
+static const char *get_media_type(const std::string &path)
+{
+    size_t dot = path.rfind('.');
+    if (dot == std::string::npos) return "image/jpeg";
+    std::string ext = path.substr(dot + 1);
+    for (auto &c : ext) c = (char)tolower((unsigned char)c);
+    if (ext == "png")  return "image/png";
+    if (ext == "webp") return "image/webp";
+    if (ext == "gif")  return "image/gif";
+    return "image/jpeg";
+}
+
+// ── CURL response accumulator ─────────────────────────────────────────────
+
+static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
+{
+    auto *buf = static_cast<std::string *>(userdata);
+    buf->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+
+std::string claude_analyze_image(const std::string &image_path,
+                                 const std::string &api_key_arg)
+{
+    // Resolve API key
+    std::string api_key = api_key_arg;
+    if (api_key.empty()) {
+        const char *env = getenv("ANTHROPIC_API_KEY");
+        if (env) api_key = env;
+    }
+    if (api_key.empty())
+        return "错误：未设置 Anthropic API Key（属性面板或环境变量 ANTHROPIC_API_KEY）";
+
+    // Read image file
+    std::ifstream file(image_path, std::ios::binary);
+    if (!file.is_open())
+        return "错误：无法打开图片文件：" + image_path;
+
+    std::vector<uint8_t> raw_data((std::istreambuf_iterator<char>(file)),
+                                   std::istreambuf_iterator<char>());
+    if (raw_data.empty())
+        return "错误：图片文件为空：" + image_path;
+
+    std::string b64        = base64_encode(raw_data);
+    const char *media_type = get_media_type(image_path);
+
+    // Build request JSON (mirrors prototype/analyze.py:56-76)
+    json body = {
+        {"model",      "claude-sonnet-4-6"},
+        {"max_tokens", 2048},
+        {"system",     SYSTEM_PROMPT},
+        {"messages", {
+            {
+                {"role", "user"},
+                {"content", {
+                    {
+                        {"type", "image"},
+                        {"source", {
+                            {"type",       "base64"},
+                            {"media_type", media_type},
+                            {"data",       b64}
+                        }}
+                    },
+                    {
+                        {"type", "text"},
+                        {"text", "请分析这张游戏截图中的英文内容。"}
+                    }
+                }}
+            }
+        }}
+    };
+    std::string body_str = body.dump();
+
+    // CURL
+    CURL *curl = curl_easy_init();
+    if (!curl) return "错误：curl_easy_init 失败";
+
+    std::string response_buf;
+    struct curl_slist *headers = nullptr;
+    std::string auth_hdr = "x-api-key: " + api_key;
+    headers = curl_slist_append(headers, auth_hdr.c_str());
+    headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+    headers = curl_slist_append(headers, "content-type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL,           "https://api.anthropic.com/v1/messages");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body_str.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_str.size());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &response_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       60L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK)
+        return std::string("网络错误：") + curl_easy_strerror(res);
+
+    // Parse response
+    try {
+        json resp = json::parse(response_buf);
+
+        if (resp.contains("error") && resp["error"].is_object())
+            return "API 错误：" + resp["error"]["message"].get<std::string>();
+
+        if (resp.contains("content") && resp["content"].is_array()
+            && !resp["content"].empty()) {
+            auto &first = resp["content"][0];
+            if (first.value("type", "") == "text")
+                return first["text"].get<std::string>();
+        }
+
+        return "错误：无法解析 API 响应：" + response_buf.substr(0, 200);
+    } catch (const json::exception &e) {
+        return std::string("JSON 解析错误：") + e.what();
+    }
+}
