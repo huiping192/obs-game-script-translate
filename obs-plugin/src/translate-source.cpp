@@ -3,7 +3,6 @@
 #include "image-encode.h"
 #include <obs-module.h>
 #include <atomic>
-#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -23,15 +22,8 @@ struct TranslateData {
 
     // 空字符串 = 当前场景（raw video callback），否则按名字捕获具体 source
     std::string target_source_name;
-    int  capture_interval_sec = 10;
-    bool auto_capture_enabled = false;
 
-    // 当前场景模式：时间戳节流 + 手动触发标志
-    std::atomic<int64_t> last_capture_ns{0};
-    std::atomic<bool>    manual_capture_requested{false};
-
-    // 具体 source 模式：video_tick 累计秒数
-    float elapsed_since_capture = 0.0f;
+    std::atomic<bool> manual_capture_requested{false};
 
     // 具体 source 模式：图形资源（在图形线程创建/销毁）
     gs_texrender_t *texrender    = nullptr;
@@ -43,7 +35,6 @@ struct TranslateData {
 };
 
 // Forward declarations
-static bool translate_clicked(obs_properties_t *props, obs_property_t *, void *);
 static void trigger_translate(TranslateData *data);
 static void translate_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, bool pressed);
 
@@ -94,18 +85,8 @@ static void on_raw_video(void *param, struct video_data *frame)
     if (data->translating.load())
         return;
 
-    bool manual = data->manual_capture_requested.exchange(false);
-    if (!manual) {
-        if (!data->auto_capture_enabled)
-            return;
-        int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        int64_t interval_ns = (int64_t)data->capture_interval_sec * 1'000'000'000LL;
-        int64_t last = data->last_capture_ns.load(std::memory_order_relaxed);
-        if (now - last < interval_ns)
-            return;
-        data->last_capture_ns.store(now, std::memory_order_relaxed);
-    }
+    if (!data->manual_capture_requested.exchange(false))
+        return;
 
     // 获取输出分辨率
     struct obs_video_info ovi;
@@ -220,20 +201,12 @@ static const char *translate_get_name(void *)
     return "Game Translator";
 }
 
-static void translate_get_defaults(obs_data_t *settings)
-{
-    obs_data_set_default_int(settings, "capture_interval", 10);
-    obs_data_set_default_bool(settings, "auto_capture", false);
-}
-
 static void *translate_create(obs_data_t *settings, obs_source_t *source)
 {
     auto *data = new TranslateData{};
     data->source = source;
-    data->api_key              = obs_data_get_string(settings, "api_key");
-    data->target_source_name   = obs_data_get_string(settings, "target_source");
-    data->capture_interval_sec = (int)obs_data_get_int(settings, "capture_interval");
-    data->auto_capture_enabled = obs_data_get_bool(settings, "auto_capture");
+    data->api_key            = obs_data_get_string(settings, "api_key");
+    data->target_source_name = obs_data_get_string(settings, "target_source");
 
     // 注册 raw video callback，用于"当前场景"模式
     struct video_scale_info vsi = {};
@@ -281,50 +254,8 @@ static void translate_update(void *priv, obs_data_t *settings)
 {
     auto *data = static_cast<TranslateData *>(priv);
     std::lock_guard<std::mutex> lock(data->result_mutex);
-    data->api_key              = obs_data_get_string(settings, "api_key");
-    data->target_source_name   = obs_data_get_string(settings, "target_source");
-    data->capture_interval_sec = (int)obs_data_get_int(settings, "capture_interval");
-    data->auto_capture_enabled = obs_data_get_bool(settings, "auto_capture");
-    // 切换 source 时重置计时器
-    data->elapsed_since_capture = 0.0f;
-    data->last_capture_ns.store(0, std::memory_order_relaxed);
-}
-
-// ── video_tick — 具体 source 模式的定时捕获 ──────────────────────────────
-
-static void translate_video_tick(void *priv, float seconds)
-{
-    auto *data = static_cast<TranslateData *>(priv);
-
-    // 当前场景模式由 raw video callback 处理
-    if (data->target_source_name.empty())
-        return;
-    if (!data->auto_capture_enabled)
-        return;
-
-    data->elapsed_since_capture += seconds;
-    if (data->elapsed_since_capture < (float)data->capture_interval_sec)
-        return;
-
-    data->elapsed_since_capture = 0.0f;
-
-    if (data->translating.load())
-        return;
-
-    std::string api_key;
-    {
-        std::lock_guard<std::mutex> lock(data->result_mutex);
-        api_key = data->api_key;
-    }
-
-    std::vector<uint8_t> jpeg = capture_source_frame(data);
-    if (jpeg.empty()) {
-        blog(LOG_WARNING, "[game-translator] 帧捕获失败，目标源可能未激活");
-        return;
-    }
-
-    blog(LOG_INFO, "[game-translator] 自动捕获帧 %zu bytes，开始翻译", jpeg.size());
-    start_translation_worker(data, std::move(jpeg), std::move(api_key));
+    data->api_key            = obs_data_get_string(settings, "api_key");
+    data->target_source_name = obs_data_get_string(settings, "target_source");
 }
 
 // ── Properties panel ──────────────────────────────────────────────────────
@@ -347,22 +278,19 @@ static obs_properties_t *translate_get_properties(void *priv)
         return true;
     }, src_list);
 
-    obs_properties_add_int(props, "capture_interval", "捕获间隔（秒）", 3, 60, 1);
-    obs_properties_add_bool(props, "auto_capture", "自动捕获");
     obs_properties_add_text(props, "api_key",
                             "Anthropic API Key（留空则读取 ANTHROPIC_API_KEY 环境变量）",
                             OBS_TEXT_PASSWORD);
     obs_properties_add_text(props, "hotkey_hint",
                             "快捷键提示：在 OBS 设置 → 快捷键 中搜索「翻译游戏画面」可自定义按键（默认 F9）",
                             OBS_TEXT_INFO);
-    obs_properties_add_button(props, "translate_btn", "分析 & 翻译", translate_clicked);
     obs_properties_add_text(props, "translation_result", "翻译结果",
                             OBS_TEXT_MULTILINE);
 
     return props;
 }
 
-// ── 手动触发翻译（按钮和快捷键共用）────────────────────────────────────────
+// ── 手动触发翻译 ─────────────────────────────────────────────────────────
 
 static void trigger_translate(TranslateData *data)
 {
@@ -394,12 +322,6 @@ static void translate_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, 
     trigger_translate(static_cast<TranslateData *>(priv));
 }
 
-static bool translate_clicked(obs_properties_t *props, obs_property_t *, void *)
-{
-    trigger_translate(static_cast<TranslateData *>(obs_properties_get_param(props)));
-    return false;
-}
-
 // ── Registration ──────────────────────────────────────────────────────────
 
 static struct obs_source_info s_translate_info = {};
@@ -410,11 +332,9 @@ void register_translate_source()
     s_translate_info.type           = OBS_SOURCE_TYPE_INPUT;
     s_translate_info.output_flags   = OBS_SOURCE_DO_NOT_DUPLICATE;
     s_translate_info.get_name       = translate_get_name;
-    s_translate_info.get_defaults   = translate_get_defaults;
     s_translate_info.create         = translate_create;
     s_translate_info.destroy        = translate_destroy;
     s_translate_info.update         = translate_update;
-    s_translate_info.video_tick     = translate_video_tick;
     s_translate_info.get_properties = translate_get_properties;
     obs_register_source(&s_translate_info);
 }
