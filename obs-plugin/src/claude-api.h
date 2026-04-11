@@ -1,8 +1,11 @@
 #pragma once
+#include <cstdint>
 #include <string>
+#include <vector>
 
-// Reads image_path, base64-encodes it, sends to Claude Vision API,
-// and returns the Chinese translation text.
-// api_key may be empty, in which case ANTHROPIC_API_KEY env var is used.
-std::string claude_analyze_image(const std::string &image_path,
-                                 const std::string &api_key);
+// Sends raw image bytes (JPEG/PNG/etc.) to Claude Vision API.
+// media_type: "image/jpeg", "image/png", etc.
+// api_key: may be empty, falls back to ANTHROPIC_API_KEY env var.
+std::string claude_analyze_image_data(const std::vector<uint8_t> &image_data,
+                                      const std::string &media_type,
+                                      const std::string &api_key);

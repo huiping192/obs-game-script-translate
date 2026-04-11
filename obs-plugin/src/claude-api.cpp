@@ -1,8 +1,5 @@
 #include "claude-api.h"
-#include <cctype>
 #include <cstdlib>
-#include <cstring>
-#include <fstream>
 #include <string>
 #include <vector>
 #include <curl/curl.h>
@@ -53,20 +50,6 @@ static std::string base64_encode(const std::vector<uint8_t> &data)
     return out;
 }
 
-// ── Image media type from extension ──────────────────────────────────────
-
-static const char *get_media_type(const std::string &path)
-{
-    size_t dot = path.rfind('.');
-    if (dot == std::string::npos) return "image/jpeg";
-    std::string ext = path.substr(dot + 1);
-    for (auto &c : ext) c = (char)tolower((unsigned char)c);
-    if (ext == "png")  return "image/png";
-    if (ext == "webp") return "image/webp";
-    if (ext == "gif")  return "image/gif";
-    return "image/jpeg";
-}
-
 // ── CURL response accumulator ─────────────────────────────────────────────
 
 static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
@@ -76,33 +59,12 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
     return size * nmemb;
 }
 
-// ── Public API ────────────────────────────────────────────────────────────
+// ── Core API call (shared by both public functions) ───────────────────────
 
-std::string claude_analyze_image(const std::string &image_path,
-                                 const std::string &api_key_arg)
+static std::string claude_call_api(const std::string &b64,
+                                   const char *media_type,
+                                   const std::string &api_key)
 {
-    // Resolve API key
-    std::string api_key = api_key_arg;
-    if (api_key.empty()) {
-        const char *env = getenv("ANTHROPIC_API_KEY");
-        if (env) api_key = env;
-    }
-    if (api_key.empty())
-        return "错误：未设置 Anthropic API Key（属性面板或环境变量 ANTHROPIC_API_KEY）";
-
-    // Read image file
-    std::ifstream file(image_path, std::ios::binary);
-    if (!file.is_open())
-        return "错误：无法打开图片文件：" + image_path;
-
-    std::vector<uint8_t> raw_data((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
-    if (raw_data.empty())
-        return "错误：图片文件为空：" + image_path;
-
-    std::string b64        = base64_encode(raw_data);
-    const char *media_type = get_media_type(image_path);
-
     // Build request JSON (mirrors prototype/analyze.py:56-76)
     json body = {
         {"model",      "claude-sonnet-4-6"},
@@ -174,4 +136,24 @@ std::string claude_analyze_image(const std::string &image_path,
     } catch (const json::exception &e) {
         return std::string("JSON 解析错误：") + e.what();
     }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+
+std::string claude_analyze_image_data(const std::vector<uint8_t> &image_data,
+                                      const std::string &media_type,
+                                      const std::string &api_key_arg)
+{
+    std::string api_key = api_key_arg;
+    if (api_key.empty()) {
+        const char *env = getenv("ANTHROPIC_API_KEY");
+        if (env) api_key = env;
+    }
+    if (api_key.empty())
+        return "错误：未设置 Anthropic API Key（属性面板或环境变量 ANTHROPIC_API_KEY）";
+
+    if (image_data.empty())
+        return "错误：图像数据为空";
+
+    return claude_call_api(base64_encode(image_data), media_type.c_str(), api_key);
 }

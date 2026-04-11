@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-game-translator VERSION 0.1.0)
+project(obs-game-translator VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,6 +47,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
+# ── stb (image write + resize) ────────────────────────────────────────────
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG master
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(stb)
+
 # ── CURL ──────────────────────────────────────────────────────────────────
 find_package(CURL REQUIRED)
 
@@ -59,11 +67,13 @@ add_library(obs-game-translator MODULE
     src/plugin-main.cpp
     src/translate-source.cpp
     src/claude-api.cpp
+    src/image-encode.cpp
 )
 
 target_include_directories(obs-game-translator PRIVATE
     "${OBS_HEADERS_DIR}/libobs"
     "${OBS_HEADERS_DIR}"
+    "${stb_SOURCE_DIR}"
 )
 
 target_link_libraries(obs-game-translator PRIVATE
