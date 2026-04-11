@@ -34,7 +34,12 @@ struct TranslateData {
     uint32_t        capture_cx   = 0;
     uint32_t        capture_cy   = 0;
 
-    obs_hotkey_id hotkey_id = OBS_INVALID_HOTKEY_ID;
+    obs_hotkey_id hotkey_id       = OBS_INVALID_HOTKEY_ID;
+    obs_hotkey_id clear_hotkey_id = OBS_INVALID_HOTKEY_ID;
+
+    int auto_clear_seconds = 5;
+    std::chrono::steady_clock::time_point translation_time;
+    bool has_translation = false;
 
     // Text overlay rendering
     obs_source_t *text_source  = nullptr;
@@ -46,7 +51,9 @@ struct TranslateData {
 
 // Forward declarations
 static void trigger_translate(TranslateData *data);
+static void clear_translation(TranslateData *data);
 static void translate_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, bool pressed);
+static void clear_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, bool pressed);
 
 // ── Worker thread ─────────────────────────────────────────────────────────
 
@@ -75,9 +82,11 @@ static void start_translation_worker(TranslateData *data,
 
         {
             std::lock_guard<std::mutex> lock(data->result_mutex);
-            data->translation  = result;
-            data->pending_text = result;
-            data->text_dirty   = true;
+            data->translation      = result;
+            data->pending_text     = result;
+            data->text_dirty       = true;
+            data->has_translation  = true;
+            data->translation_time = std::chrono::steady_clock::now();
         }
 
         obs_data_t *settings = obs_source_get_settings(source);
@@ -242,6 +251,7 @@ static void translate_get_defaults(obs_data_t *settings)
     obs_data_set_default_int(settings,    "overlay_color",        0xFFFFFFFF);
     obs_data_set_default_int(settings,    "overlay_bg_opacity",   80);
     obs_data_set_default_int(settings,    "overlay_custom_width", 800);
+    obs_data_set_default_int(settings,    "auto_clear_seconds",   5);
 }
 
 static void *translate_create(obs_data_t *settings, obs_source_t *source)
@@ -254,6 +264,7 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     blog(LOG_INFO, "[game-translator] 加载设置: llm_provider=%s", data->llm_provider.c_str());
     data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
     data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
+    data->auto_clear_seconds = (int)obs_data_get_int(settings, "auto_clear_seconds");
 
     struct video_scale_info vsi = {};
     vsi.format = VIDEO_FORMAT_BGRA;
@@ -275,6 +286,23 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
         obs_data_array_release(defaults);
     }
     obs_data_array_release(saved);
+
+    data->clear_hotkey_id = obs_hotkey_register_source(
+        source, "game_translator_clear", "清除翻译内容",
+        clear_hotkey_pressed, data);
+
+    // Default F10 if no hotkey saved yet
+    obs_data_array_t *saved_clear = obs_hotkey_save(data->clear_hotkey_id);
+    if (obs_data_array_count(saved_clear) == 0) {
+        obs_data_array_t *defaults_clear = obs_data_array_create();
+        obs_data_t *item_clear = obs_data_create();
+        obs_data_set_string(item_clear, "key", "OBS_KEY_F10");
+        obs_data_array_push_back(defaults_clear, item_clear);
+        obs_data_release(item_clear);
+        obs_hotkey_load(data->clear_hotkey_id, defaults_clear);
+        obs_data_array_release(defaults_clear);
+    }
+    obs_data_array_release(saved_clear);
 
     // Create private text source for on-screen rendering
     obs_data_t *ts = obs_data_create();
@@ -327,6 +355,7 @@ static void translate_update(void *priv, obs_data_t *settings)
     data->target_source_name = obs_data_get_string(settings, "target_source");
     data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
     data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
+    data->auto_clear_seconds = (int)obs_data_get_int(settings, "auto_clear_seconds");
 
     if (data->text_source) {
         obs_data_t *ts = obs_data_create();
@@ -343,6 +372,23 @@ static void translate_update(void *priv, obs_data_t *settings)
         obs_source_update(data->text_source, ts);
         obs_data_release(ts);
     }
+}
+
+// ── Clear translation ─────────────────────────────────────────────────────
+
+static void clear_translation(TranslateData *data)
+{
+    {
+        std::lock_guard<std::mutex> lock(data->result_mutex);
+        data->translation    = "";
+        data->pending_text   = "";
+        data->text_dirty     = true;
+        data->has_translation = false;
+    }
+    obs_data_t *settings = obs_source_get_settings(data->source);
+    obs_data_set_string(settings, "translation_result", "");
+    obs_data_release(settings);
+    obs_source_update_properties(data->source);
 }
 
 // ── Video rendering ───────────────────────────────────────────────────────
@@ -368,6 +414,22 @@ static void translate_video_tick(void *priv, float)
         obs_data_set_string(ts, "text", pending.c_str());
         obs_source_update(data->text_source, ts);
         obs_data_release(ts);
+    }
+
+    // Auto-clear after configured seconds
+    int auto_secs;
+    bool has_trans;
+    std::chrono::steady_clock::time_point trans_time;
+    {
+        std::lock_guard<std::mutex> lock(data->result_mutex);
+        auto_secs  = data->auto_clear_seconds;
+        has_trans  = data->has_translation;
+        trans_time = data->translation_time;
+    }
+    if (has_trans && auto_secs > 0) {
+        auto elapsed = std::chrono::steady_clock::now() - trans_time;
+        if (elapsed >= std::chrono::seconds(auto_secs))
+            clear_translation(data);
     }
 }
 
@@ -463,12 +525,14 @@ static obs_properties_t *translate_get_properties(void *priv)
                             "API Key（必填）",
                             OBS_TEXT_PASSWORD);
     obs_properties_add_text(props, "hotkey_hint",
-                            "快捷键提示：在 OBS 设置 → 快捷键 中搜索「翻译游戏画面」可自定义按键（默认 F9）",
+                            "快捷键提示：在 OBS 设置 → 快捷键 中搜索「翻译」可自定义按键（翻译默认 F9，清除默认 F10）",
                             OBS_TEXT_INFO);
 
     // Text overlay appearance
     obs_properties_add_font(props, "overlay_font", "字体");
     obs_properties_add_color(props, "overlay_color", "文字颜色");
+    obs_properties_add_int_slider(props, "auto_clear_seconds",
+                                  "翻译自动消失（秒，0=不消失）", 0, 30, 1);
     obs_properties_add_int_slider(props, "overlay_bg_opacity",
                                   "背景不透明度（%）", 0, 100, 5);
     obs_properties_add_int(props, "overlay_custom_width",
@@ -510,6 +574,13 @@ static void translate_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, 
     if (!pressed)
         return;
     trigger_translate(static_cast<TranslateData *>(priv));
+}
+
+static void clear_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+    if (!pressed)
+        return;
+    clear_translation(static_cast<TranslateData *>(priv));
 }
 
 // ── Registration ──────────────────────────────────────────────────────────
