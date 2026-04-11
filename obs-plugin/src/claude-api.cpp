@@ -7,7 +7,6 @@
 
 using json = nlohmann::json;
 
-// Same system prompt as the Python prototype (prototype/analyze.py:20-26)
 static const char *SYSTEM_PROMPT =
     "你是一位游戏剧情翻译助手。\n\n"
     "用户会发送游戏截图。请只识别并翻译剧情相关的英文文本，"
@@ -67,51 +66,17 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
     return size * nmemb;
 }
 
-// ── Core API call (shared by both public functions) ───────────────────────
+// ── CURL helper ───────────────────────────────────────────────────────────
 
-static std::string claude_call_api(const std::string &b64,
-                                   const char *media_type,
-                                   const std::string &api_key)
+static std::string do_post(const char *url,
+                           struct curl_slist *headers,
+                           const std::string &body_str)
 {
-    // Build request JSON (mirrors prototype/analyze.py:56-76)
-    json body = {
-        {"model",      "claude-sonnet-4-6"},
-        {"max_tokens", 2048},
-        {"system",     SYSTEM_PROMPT},
-        {"messages", {
-            {
-                {"role", "user"},
-                {"content", {
-                    {
-                        {"type", "image"},
-                        {"source", {
-                            {"type",       "base64"},
-                            {"media_type", media_type},
-                            {"data",       b64}
-                        }}
-                    },
-                    {
-                        {"type", "text"},
-                        {"text", "请翻译这张游戏截图中的剧情对话内容。"}
-                    }
-                }}
-            }
-        }}
-    };
-    std::string body_str = body.dump();
-
-    // CURL
     CURL *curl = curl_easy_init();
     if (!curl) return "错误：curl_easy_init 失败";
 
     std::string response_buf;
-    struct curl_slist *headers = nullptr;
-    std::string auth_hdr = "x-api-key: " + api_key;
-    headers = curl_slist_append(headers, auth_hdr.c_str());
-    headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
-    headers = curl_slist_append(headers, "content-type: application/json");
-
-    curl_easy_setopt(curl, CURLOPT_URL,           "https://api.anthropic.com/v1/messages");
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    headers);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body_str.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_str.size());
@@ -120,27 +85,113 @@ static std::string claude_call_api(const std::string &b64,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,       60L);
 
     CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK)
         return std::string("网络错误：") + curl_easy_strerror(res);
 
-    // Parse response
-    try {
-        json resp = json::parse(response_buf);
+    return response_buf;
+}
 
+// ── Claude API ────────────────────────────────────────────────────────────
+
+static std::string call_claude(const std::string &b64,
+                                const char *media_type,
+                                const std::string &api_key)
+{
+    json body = {
+        {"model",      "claude-sonnet-4-6"},
+        {"max_tokens", 2048},
+        {"system",     SYSTEM_PROMPT},
+        {"messages", {{
+            {"role", "user"},
+            {"content", {
+                {
+                    {"type", "image"},
+                    {"source", {
+                        {"type",       "base64"},
+                        {"media_type", media_type},
+                        {"data",       b64}
+                    }}
+                },
+                {{"type", "text"}, {"text", "请翻译这张游戏截图中的剧情对话内容。"}}
+            }}
+        }}}
+    };
+
+    struct curl_slist *headers = nullptr;
+    std::string auth_hdr = "x-api-key: " + api_key;
+    headers = curl_slist_append(headers, auth_hdr.c_str());
+    headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+    headers = curl_slist_append(headers, "content-type: application/json");
+
+    std::string raw = do_post("https://api.anthropic.com/v1/messages",
+                              headers, body.dump());
+    curl_slist_free_all(headers);
+
+    try {
+        json resp = json::parse(raw);
         if (resp.contains("error") && resp["error"].is_object())
             return "API 错误：" + resp["error"]["message"].get<std::string>();
-
         if (resp.contains("content") && resp["content"].is_array()
             && !resp["content"].empty()) {
             auto &first = resp["content"][0];
             if (first.value("type", "") == "text")
                 return first["text"].get<std::string>();
         }
+        return "错误：无法解析 API 响应：" + raw.substr(0, 200);
+    } catch (const json::exception &e) {
+        return std::string("JSON 解析错误：") + e.what();
+    }
+}
 
-        return "错误：无法解析 API 响应：" + response_buf.substr(0, 200);
+// ── GLM API (OpenAI-compatible) ───────────────────────────────────────────
+
+static std::string call_glm(const std::string &b64,
+                             const char *media_type,
+                             const std::string &api_key)
+{
+    std::string data_url = std::string("data:") + media_type + ";base64," + b64;
+
+    json body = {
+        {"model",      "glm-4.6v"},
+        {"max_tokens", 2048},
+        {"thinking",   {{"type", "disabled"}}},
+        {"messages", {
+            {{"role", "system"}, {"content", SYSTEM_PROMPT}},
+            {
+                {"role", "user"},
+                {"content", {
+                    {
+                        {"type",      "image_url"},
+                        {"image_url", {{"url", data_url}}}
+                    },
+                    {{"type", "text"}, {"text", "请翻译这张游戏截图中的剧情对话内容。"}}
+                }}
+            }
+        }}
+    };
+
+    struct curl_slist *headers = nullptr;
+    std::string auth_hdr = "Authorization: Bearer " + api_key;
+    headers = curl_slist_append(headers, auth_hdr.c_str());
+    headers = curl_slist_append(headers, "content-type: application/json");
+
+    std::string raw = do_post("https://api.z.ai/api/coding/paas/v4/chat/completions",
+                              headers, body.dump());
+    curl_slist_free_all(headers);
+
+    try {
+        json resp = json::parse(raw);
+        if (resp.contains("error") && resp["error"].is_object())
+            return "API 错误：" + resp["error"]["message"].get<std::string>();
+        if (resp.contains("choices") && resp["choices"].is_array()
+            && !resp["choices"].empty()) {
+            auto &choice = resp["choices"][0];
+            if (choice.contains("message") && choice["message"].contains("content"))
+                return choice["message"]["content"].get<std::string>();
+        }
+        return "错误：无法解析 API 响应：" + raw.substr(0, 200);
     } catch (const json::exception &e) {
         return std::string("JSON 解析错误：") + e.what();
     }
@@ -148,16 +199,20 @@ static std::string claude_call_api(const std::string &b64,
 
 // ── Public API ────────────────────────────────────────────────────────────
 
-std::string claude_analyze_image_data(const std::vector<uint8_t> &image_data,
-                                      const std::string &media_type,
-                                      const std::string &api_key_arg)
+std::string analyze_image_data(const std::vector<uint8_t> &image_data,
+                                const std::string &media_type,
+                                const std::string &api_key,
+                                const std::string &provider)
 {
-    if (api_key_arg.empty())
-        return "错误：请在属性面板中设置 Anthropic API Key";
-    const std::string &api_key = api_key_arg;
-
+    if (api_key.empty())
+        return "错误：请在属性面板中设置 API Key";
     if (image_data.empty())
         return "错误：图像数据为空";
 
-    return claude_call_api(base64_encode(image_data), media_type.c_str(), api_key);
+    std::string b64 = base64_encode(image_data);
+
+    if (provider == "glm")
+        return call_glm(b64, media_type.c_str(), api_key);
+
+    return call_claude(b64, media_type.c_str(), api_key);
 }
