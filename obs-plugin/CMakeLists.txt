@@ -3,8 +3,11 @@ project(obs-game-translator VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_ARCHITECTURES "arm64")
-set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")
+
+if(APPLE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")
+endif()
 
 include(FetchContent)
 
@@ -58,10 +61,6 @@ FetchContent_MakeAvailable(stb)
 # ── CURL ──────────────────────────────────────────────────────────────────
 find_package(CURL REQUIRED)
 
-# ── OBS.app paths ─────────────────────────────────────────────────────────
-set(OBS_APP        "/Applications/OBS.app")
-set(OBS_FRAMEWORKS "${OBS_APP}/Contents/Frameworks")
-
 # ── Plugin target ─────────────────────────────────────────────────────────
 add_library(obs-game-translator MODULE
     src/plugin-main.cpp
@@ -79,28 +78,63 @@ target_include_directories(obs-game-translator PRIVATE
 target_link_libraries(obs-game-translator PRIVATE
     CURL::libcurl
     nlohmann_json::nlohmann_json
-    "-F${OBS_FRAMEWORKS}"
-    "-framework libobs"
 )
 
-# macOS .plugin bundle
-set_target_properties(obs-game-translator PROPERTIES
-    BUNDLE                  TRUE
-    BUNDLE_EXTENSION        "plugin"
-    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/PluginInfo.plist"
-    PREFIX                  ""
-    OUTPUT_NAME             "obs-game-translator"
-    INSTALL_RPATH           "${OBS_FRAMEWORKS}"
-    BUILD_RPATH             "${OBS_FRAMEWORKS}"
-)
+# ── Platform-specific configuration ──────────────────────────────────────
+if(APPLE)
+    set(OBS_APP        "/Applications/OBS.app")
+    set(OBS_FRAMEWORKS "${OBS_APP}/Contents/Frameworks")
 
-# ── Install helper (run: cmake --build build --target install-plugin) ─────
-# OBS 32 on macOS expects: ~/Library/Application Support/obs-studio/plugins/<name>.plugin/
-set(OBS_PLUGIN_DEST "$ENV{HOME}/Library/Application Support/obs-studio/plugins")
-add_custom_target(install-plugin
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "$<TARGET_BUNDLE_DIR:obs-game-translator>"
-            "${OBS_PLUGIN_DEST}/obs-game-translator.plugin"
-    DEPENDS obs-game-translator
-    COMMENT "Installing plugin to ${OBS_PLUGIN_DEST}/obs-game-translator.plugin"
-)
+    target_link_libraries(obs-game-translator PRIVATE
+        "-F${OBS_FRAMEWORKS}"
+        "-framework libobs"
+    )
+
+    set_target_properties(obs-game-translator PROPERTIES
+        BUNDLE                   TRUE
+        BUNDLE_EXTENSION         "plugin"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/PluginInfo.plist"
+        PREFIX                   ""
+        OUTPUT_NAME              "obs-game-translator"
+        INSTALL_RPATH            "${OBS_FRAMEWORKS}"
+        BUILD_RPATH              "${OBS_FRAMEWORKS}"
+    )
+
+    set(OBS_PLUGIN_DEST "$ENV{HOME}/Library/Application Support/obs-studio/plugins")
+    add_custom_target(install-plugin
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "$<TARGET_BUNDLE_DIR:obs-game-translator>"
+                "${OBS_PLUGIN_DEST}/obs-game-translator.plugin"
+        DEPENDS obs-game-translator
+        COMMENT "Installing plugin to ${OBS_PLUGIN_DEST}/obs-game-translator.plugin"
+    )
+
+elseif(WIN32)
+    # Point OBS_DIR at your OBS Studio installation root.
+    # Example: cmake -S obs-plugin -B obs-plugin/build -DOBS_DIR="C:/Program Files/obs-studio"
+    if(NOT DEFINED OBS_DIR)
+        set(OBS_DIR "C:/Program Files/obs-studio" CACHE PATH "OBS Studio installation directory")
+    endif()
+
+    target_link_libraries(obs-game-translator PRIVATE
+        "${OBS_DIR}/bin/64bit/obs.lib"
+    )
+
+    set_target_properties(obs-game-translator PROPERTIES
+        PREFIX      ""
+        OUTPUT_NAME "obs-game-translator"
+    )
+
+    set(OBS_PLUGIN_DEST "$ENV{APPDATA}/obs-studio/plugins/obs-game-translator/bin/64bit")
+    add_custom_target(install-plugin
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${OBS_PLUGIN_DEST}"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "$<TARGET_FILE:obs-game-translator>"
+                "${OBS_PLUGIN_DEST}/obs-game-translator.dll"
+        DEPENDS obs-game-translator
+        COMMENT "Installing plugin to ${OBS_PLUGIN_DEST}"
+    )
+
+else()
+    message(WARNING "Unsupported platform; only macOS and Windows are tested.")
+endif()

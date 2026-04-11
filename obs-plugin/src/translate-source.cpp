@@ -9,29 +9,36 @@
 #include <thread>
 #include <vector>
 
+static const int OVERLAY_PADDING = 12;
+
 // ── Source private data ───────────────────────────────────────────────────
 
 struct TranslateData {
     obs_source_t *source;
 
     std::string api_key;
-    std::mutex        result_mutex;
-    std::string       translation;
+    std::mutex  result_mutex;
+    std::string translation;
     std::atomic<bool> translating{false};
-    std::thread       worker;
+    std::thread worker;
 
-    // 空字符串 = 当前场景（raw video callback），否则按名字捕获具体 source
+    // empty = current scene (raw video callback), otherwise named source
     std::string target_source_name;
-
     std::atomic<bool> manual_capture_requested{false};
 
-    // 具体 source 模式：图形资源（在图形线程创建/销毁）
+    // Capture graphics resources (specific source mode)
     gs_texrender_t *texrender    = nullptr;
     gs_stagesurf_t *stagesurface = nullptr;
     uint32_t        capture_cx   = 0;
     uint32_t        capture_cy   = 0;
 
     obs_hotkey_id hotkey_id = OBS_INVALID_HOTKEY_ID;
+
+    // Text overlay rendering
+    obs_source_t *text_source = nullptr;
+    std::string   pending_text;
+    bool          text_dirty  = false;
+    int           bg_opacity  = 80;  // 0–100 %
 };
 
 // Forward declarations
@@ -59,7 +66,9 @@ static void start_translation_worker(TranslateData *data,
 
         {
             std::lock_guard<std::mutex> lock(data->result_mutex);
-            data->translation = result;
+            data->translation  = result;
+            data->pending_text = result;
+            data->text_dirty   = true;
         }
 
         obs_data_t *settings = obs_source_get_settings(source);
@@ -72,23 +81,19 @@ static void start_translation_worker(TranslateData *data,
     });
 }
 
-// ── 当前场景：raw video callback ──────────────────────────────────────────
-// OBS 在输出帧准备好后调用此函数（与录播/推流拿到的是同一帧）。
+// ── Current scene: raw video callback ─────────────────────────────────────
 
 static void on_raw_video(void *param, struct video_data *frame)
 {
     auto *data = static_cast<TranslateData *>(param);
 
-    // 只在"当前场景"模式下使用
     if (!data->target_source_name.empty())
         return;
     if (data->translating.load())
         return;
-
     if (!data->manual_capture_requested.exchange(false))
         return;
 
-    // 获取输出分辨率
     struct obs_video_info ovi;
     if (!obs_get_video_info(&ovi))
         return;
@@ -97,7 +102,6 @@ static void on_raw_video(void *param, struct video_data *frame)
     if (cx == 0 || cy == 0 || !frame->data[0])
         return;
 
-    // 拷贝像素（BGRA，OBS 在注册时已指定格式转换）
     std::vector<uint8_t> pixels((size_t)cy * cx * 4);
     for (uint32_t y = 0; y < cy; y++) {
         memcpy(pixels.data() + (size_t)y * cx * 4,
@@ -119,7 +123,7 @@ static void on_raw_video(void *param, struct video_data *frame)
     start_translation_worker(data, std::move(jpeg), std::move(api_key));
 }
 
-// ── 具体 source：texrender 帧捕获 ─────────────────────────────────────────
+// ── Specific source: texrender frame capture ───────────────────────────────
 
 static std::vector<uint8_t> capture_source_frame(TranslateData *data)
 {
@@ -201,14 +205,33 @@ static const char *translate_get_name(void *)
     return "Game Translator";
 }
 
+static void translate_get_defaults(obs_data_t *settings)
+{
+    obs_data_t *font_obj = obs_data_create();
+#ifdef __APPLE__
+    obs_data_set_string(font_obj, "face", "Hiragino Sans");
+#elif defined(_WIN32)
+    obs_data_set_string(font_obj, "face", "Microsoft YaHei");
+#else
+    obs_data_set_string(font_obj, "face", "Sans");
+#endif
+    obs_data_set_int(font_obj, "size", 36);
+    obs_data_set_obj(settings, "overlay_font", font_obj);
+    obs_data_release(font_obj);
+
+    obs_data_set_int(settings, "overlay_color",        0xFFFFFFFF);
+    obs_data_set_int(settings, "overlay_bg_opacity",   80);
+    obs_data_set_int(settings, "overlay_custom_width", 800);
+}
+
 static void *translate_create(obs_data_t *settings, obs_source_t *source)
 {
     auto *data = new TranslateData{};
-    data->source = source;
+    data->source             = source;
     data->api_key            = obs_data_get_string(settings, "api_key");
     data->target_source_name = obs_data_get_string(settings, "target_source");
+    data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
 
-    // 注册 raw video callback，用于"当前场景"模式
     struct video_scale_info vsi = {};
     vsi.format = VIDEO_FORMAT_BGRA;
     obs_add_raw_video_callback(&vsi, on_raw_video, data);
@@ -217,7 +240,7 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
         source, "game_translator_translate", "翻译游戏画面",
         translate_hotkey_pressed, data);
 
-    // 若用户从未设置过快捷键，默认绑定 F9
+    // Default F9 if no hotkey saved yet
     obs_data_array_t *saved = obs_hotkey_save(data->hotkey_id);
     if (obs_data_array_count(saved) == 0) {
         obs_data_array_t *defaults = obs_data_array_create();
@@ -230,6 +253,26 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     }
     obs_data_array_release(saved);
 
+    // Create private text source for on-screen rendering
+    obs_data_t *ts = obs_data_create();
+    obs_data_set_string(ts, "text", "");
+
+    obs_data_t *font_obj = obs_data_get_obj(settings, "overlay_font");
+    if (font_obj) {
+        obs_data_set_obj(ts, "font", font_obj);
+        obs_data_release(font_obj);
+    }
+    long long color = obs_data_get_int(settings, "overlay_color");
+    obs_data_set_int(ts, "color1", color);
+    obs_data_set_int(ts, "color2", color);
+    obs_data_set_bool(ts, "word_wrap", true);
+    obs_data_set_int(ts, "custom_width", obs_data_get_int(settings, "overlay_custom_width"));
+
+    data->text_source = obs_source_create_private("text_ft2_source_v2", nullptr, ts);
+    if (!data->text_source)
+        blog(LOG_WARNING, "[game-translator] text_ft2_source_v2 不可用，翻译将只显示在属性面板");
+    obs_data_release(ts);
+
     return data;
 }
 
@@ -241,6 +284,8 @@ static void translate_destroy(void *priv)
 
     if (data->worker.joinable())
         data->worker.join();
+
+    obs_source_release(data->text_source);
 
     obs_enter_graphics();
     gs_texrender_destroy(data->texrender);
@@ -256,6 +301,110 @@ static void translate_update(void *priv, obs_data_t *settings)
     std::lock_guard<std::mutex> lock(data->result_mutex);
     data->api_key            = obs_data_get_string(settings, "api_key");
     data->target_source_name = obs_data_get_string(settings, "target_source");
+    data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
+
+    if (data->text_source) {
+        obs_data_t *ts = obs_data_create();
+        obs_data_t *font_obj = obs_data_get_obj(settings, "overlay_font");
+        if (font_obj) {
+            obs_data_set_obj(ts, "font", font_obj);
+            obs_data_release(font_obj);
+        }
+        long long color = obs_data_get_int(settings, "overlay_color");
+        obs_data_set_int(ts, "color1", color);
+        obs_data_set_int(ts, "color2", color);
+        obs_data_set_bool(ts, "word_wrap", true);
+        obs_data_set_int(ts, "custom_width", obs_data_get_int(settings, "overlay_custom_width"));
+        obs_source_update(data->text_source, ts);
+        obs_data_release(ts);
+    }
+}
+
+// ── Video rendering ───────────────────────────────────────────────────────
+
+static void translate_video_tick(void *priv, float)
+{
+    auto *data = static_cast<TranslateData *>(priv);
+
+    std::string pending;
+    bool dirty = false;
+    {
+        std::lock_guard<std::mutex> lock(data->result_mutex);
+        if (data->text_dirty) {
+            pending          = data->pending_text;
+            data->text_dirty = false;
+            dirty            = true;
+        }
+    }
+
+    // Apply new translation text on the main thread (safe for obs_source_update)
+    if (dirty && data->text_source) {
+        obs_data_t *ts = obs_data_create();
+        obs_data_set_string(ts, "text", pending.c_str());
+        obs_source_update(data->text_source, ts);
+        obs_data_release(ts);
+    }
+}
+
+static void translate_video_render(void *priv, gs_effect_t *)
+{
+    auto *data = static_cast<TranslateData *>(priv);
+    if (!data->text_source)
+        return;
+
+    // Read dimensions each frame directly from the child source.
+    // text_ft2_source_v2 computes its size lazily on the first render call,
+    // so we must always call obs_source_video_render to break the chicken-and-egg.
+    uint32_t tw = obs_source_get_width(data->text_source);
+    uint32_t th = obs_source_get_height(data->text_source);
+
+    if (tw == 0 || th == 0) {
+        // Drive one render so the text source can compute its texture dimensions.
+        obs_source_video_render(data->text_source);
+        return;
+    }
+
+    uint32_t total_w = tw + 2 * (uint32_t)OVERLAY_PADDING;
+    uint32_t total_h = th + 2 * (uint32_t)OVERLAY_PADDING;
+
+    // Semi-transparent background rectangle
+    gs_effect_t *solid       = obs_get_base_effect(OBS_EFFECT_SOLID);
+    gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
+
+    struct vec4 bg;
+    vec4_set(&bg, 0.0f, 0.0f, 0.0f, (float)data->bg_opacity / 100.0f);
+    gs_effect_set_vec4(color_param, &bg);
+
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+    while (gs_effect_loop(solid, "Solid")) {
+        gs_draw_sprite(nullptr, 0, total_w, total_h);
+    }
+    gs_blend_state_pop();
+
+    // Text with padding offset
+    gs_matrix_push();
+    gs_matrix_translate3f((float)OVERLAY_PADDING, (float)OVERLAY_PADDING, 0.0f);
+    obs_source_video_render(data->text_source);
+    gs_matrix_pop();
+}
+
+static uint32_t translate_get_width(void *priv)
+{
+    auto *data = static_cast<TranslateData *>(priv);
+    if (!data->text_source)
+        return 0;
+    uint32_t tw = obs_source_get_width(data->text_source);
+    return tw > 0 ? tw + 2 * (uint32_t)OVERLAY_PADDING : 0;
+}
+
+static uint32_t translate_get_height(void *priv)
+{
+    auto *data = static_cast<TranslateData *>(priv);
+    if (!data->text_source)
+        return 0;
+    uint32_t th = obs_source_get_height(data->text_source);
+    return th > 0 ? th + 2 * (uint32_t)OVERLAY_PADDING : 0;
 }
 
 // ── Properties panel ──────────────────────────────────────────────────────
@@ -265,6 +414,7 @@ static obs_properties_t *translate_get_properties(void *priv)
     obs_properties_t *props = obs_properties_create();
     obs_properties_set_param(props, priv, nullptr);
 
+    // Capture source
     obs_property_t *src_list = obs_properties_add_list(
         props, "target_source", "捕获源",
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -284,13 +434,22 @@ static obs_properties_t *translate_get_properties(void *priv)
     obs_properties_add_text(props, "hotkey_hint",
                             "快捷键提示：在 OBS 设置 → 快捷键 中搜索「翻译游戏画面」可自定义按键（默认 F9）",
                             OBS_TEXT_INFO);
-    obs_properties_add_text(props, "translation_result", "翻译结果",
+
+    // Text overlay appearance
+    obs_properties_add_font(props, "overlay_font", "字体");
+    obs_properties_add_color(props, "overlay_color", "文字颜色");
+    obs_properties_add_int_slider(props, "overlay_bg_opacity",
+                                  "背景不透明度（%）", 0, 100, 5);
+    obs_properties_add_int(props, "overlay_custom_width",
+                           "文字换行宽度（像素）", 200, 3840, 10);
+
+    obs_properties_add_text(props, "translation_result", "翻译结果（只读参考）",
                             OBS_TEXT_MULTILINE);
 
     return props;
 }
 
-// ── 手动触发翻译 ─────────────────────────────────────────────────────────
+// ── Manual trigger ────────────────────────────────────────────────────────
 
 static void trigger_translate(TranslateData *data)
 {
@@ -330,11 +489,16 @@ void register_translate_source()
 {
     s_translate_info.id             = "game_translator_source";
     s_translate_info.type           = OBS_SOURCE_TYPE_INPUT;
-    s_translate_info.output_flags   = OBS_SOURCE_DO_NOT_DUPLICATE;
+    s_translate_info.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE;
     s_translate_info.get_name       = translate_get_name;
+    s_translate_info.get_defaults   = translate_get_defaults;
     s_translate_info.create         = translate_create;
     s_translate_info.destroy        = translate_destroy;
     s_translate_info.update         = translate_update;
+    s_translate_info.video_tick     = translate_video_tick;
+    s_translate_info.video_render   = translate_video_render;
+    s_translate_info.get_width      = translate_get_width;
+    s_translate_info.get_height     = translate_get_height;
     s_translate_info.get_properties = translate_get_properties;
     obs_register_source(&s_translate_info);
 }
