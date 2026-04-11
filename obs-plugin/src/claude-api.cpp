@@ -10,7 +10,7 @@ using json = nlohmann::json;
 // Same system prompt as the Python prototype (prototype/analyze.py:20-26)
 static const char *SYSTEM_PROMPT =
     "你是一位游戏翻译助手。\n\n"
-    "用户会发送 Switch 游戏截图。请识别截图中所有可见的英文文本"
+    "用户会发送游戏截图。请识别截图中所有可见的英文文本"
     "（对话框、UI 文字、标识、字幕等），并直接输出自然流畅的中文翻译。\n\n"
     "输出格式要求（严格遵守）：\n"
     "- 只输出纯文本，禁止使用任何 Markdown 格式\n"
