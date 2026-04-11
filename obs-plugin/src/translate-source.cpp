@@ -38,10 +38,14 @@ struct TranslateData {
     gs_stagesurf_t *stagesurface = nullptr;
     uint32_t        capture_cx   = 0;
     uint32_t        capture_cy   = 0;
+
+    obs_hotkey_id hotkey_id = OBS_INVALID_HOTKEY_ID;
 };
 
-// Forward declaration
+// Forward declarations
 static bool translate_clicked(obs_properties_t *props, obs_property_t *, void *);
+static void trigger_translate(TranslateData *data);
+static void translate_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, bool pressed);
 
 // ── Worker thread ─────────────────────────────────────────────────────────
 
@@ -236,6 +240,23 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     vsi.format = VIDEO_FORMAT_BGRA;
     obs_add_raw_video_callback(&vsi, on_raw_video, data);
 
+    data->hotkey_id = obs_hotkey_register_source(
+        source, "game_translator_translate", "翻译游戏画面",
+        translate_hotkey_pressed, data);
+
+    // 若用户从未设置过快捷键，默认绑定 F9
+    obs_data_array_t *saved = obs_hotkey_save(data->hotkey_id);
+    if (obs_data_array_count(saved) == 0) {
+        obs_data_array_t *defaults = obs_data_array_create();
+        obs_data_t *item = obs_data_create();
+        obs_data_set_string(item, "key", "OBS_KEY_F9");
+        obs_data_array_push_back(defaults, item);
+        obs_data_release(item);
+        obs_hotkey_load(data->hotkey_id, defaults);
+        obs_data_array_release(defaults);
+    }
+    obs_data_array_release(saved);
+
     return data;
 }
 
@@ -331,6 +352,9 @@ static obs_properties_t *translate_get_properties(void *priv)
     obs_properties_add_text(props, "api_key",
                             "Anthropic API Key（留空则读取 ANTHROPIC_API_KEY 环境变量）",
                             OBS_TEXT_PASSWORD);
+    obs_properties_add_text(props, "hotkey_hint",
+                            "快捷键提示：在 OBS 设置 → 快捷键 中搜索「翻译游戏画面」可自定义按键（默认 F9）",
+                            OBS_TEXT_INFO);
     obs_properties_add_button(props, "translate_btn", "分析 & 翻译", translate_clicked);
     obs_properties_add_text(props, "translation_result", "翻译结果",
                             OBS_TEXT_MULTILINE);
@@ -338,35 +362,41 @@ static obs_properties_t *translate_get_properties(void *priv)
     return props;
 }
 
-// ── Button callback ───────────────────────────────────────────────────────
+// ── 手动触发翻译（按钮和快捷键共用）────────────────────────────────────────
 
-static bool translate_clicked(obs_properties_t *props, obs_property_t *, void *)
+static void trigger_translate(TranslateData *data)
 {
-    auto *data = static_cast<TranslateData *>(obs_properties_get_param(props));
     if (!data || data->translating.load())
-        return false;
+        return;
 
     if (data->target_source_name.empty()) {
-        // 当前场景：通知 raw video callback 在下一帧捕获
         data->manual_capture_requested.store(true);
     } else {
-        // 具体 source：直接捕获
         std::string api_key;
         {
             std::lock_guard<std::mutex> lock(data->result_mutex);
             api_key = data->api_key;
         }
-
         std::vector<uint8_t> jpeg = capture_source_frame(data);
         if (jpeg.empty()) {
             blog(LOG_WARNING, "[game-translator] 帧捕获失败，请确认捕获源正在运行");
-            return false;
+            return;
         }
-
         blog(LOG_INFO, "[game-translator] 手动捕获帧 %zu bytes，开始翻译", jpeg.size());
         start_translation_worker(data, std::move(jpeg), std::move(api_key));
     }
+}
 
+static void translate_hotkey_pressed(void *priv, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+    if (!pressed)
+        return;
+    trigger_translate(static_cast<TranslateData *>(priv));
+}
+
+static bool translate_clicked(obs_properties_t *props, obs_property_t *, void *)
+{
+    trigger_translate(static_cast<TranslateData *>(obs_properties_get_param(props)));
     return false;
 }
 
