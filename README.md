@@ -1,0 +1,1 @@
+# obs-game-script-translate
