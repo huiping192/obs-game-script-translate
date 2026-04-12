@@ -21,7 +21,7 @@ nlohmann::json ClaudeProvider::build_request_body(const std::string &b64,
                                                    const char *user_message) const
 {
     return {
-        {"model",      "claude-sonnet-4-6"},
+        {"model",      "claude-haiku-4-5-20251001"},
         {"max_tokens", 2048},
         {"system",     system_prompt},
         {"messages", {{

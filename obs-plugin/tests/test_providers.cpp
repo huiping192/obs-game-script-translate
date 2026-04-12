@@ -37,7 +37,7 @@ TEST_CASE("ClaudeProvider build_request_body structure",
 	auto body = ProviderTestAccess::call_build_request_body(
 		p, "b64data", "image/jpeg", "sys prompt", "translate this");
 
-	CHECK(body["model"] == "claude-sonnet-4-6");
+	CHECK(body["model"] == "claude-haiku-4-5-20251001");
 	CHECK(body["max_tokens"] == 2048);
 	CHECK(body["system"] == "sys prompt");
 
