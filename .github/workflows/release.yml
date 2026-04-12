@@ -130,7 +130,7 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\obs-game-translator.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /O"$env:GITHUB_WORKSPACE" installer\obs-game-translator.iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - uses: actions/upload-artifact@v4

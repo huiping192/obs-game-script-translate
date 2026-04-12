@@ -12,8 +12,6 @@ DefaultDirName={userappdata}\obs-studio\plugins\obs-game-translator
 DisableDirPage=yes
 PrivilegesRequired=lowest
 OutputBaseFilename=obs-game-translator-windows-x64-installer
-; Output relative to the .iss file location (repo root after resolving ..\)
-OutputDir=..
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
