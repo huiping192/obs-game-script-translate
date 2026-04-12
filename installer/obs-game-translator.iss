@@ -22,7 +22,6 @@ SourceDir=..\pkg\obs-game-translator
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Files]
 Source: "bin\64bit\obs-game-translator.dll"; DestDir: "{app}\bin\64bit"; Flags: ignoreversion
