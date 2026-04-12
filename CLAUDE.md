@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-OBS 插件，通过 Claude Vision API 实时识别 Switch 游戏画面中的英文并翻译成中文。OBS Source 类型，在属性面板中配置，支持手动触发或定时自动翻译。
+OBS 插件，通过 LLM Vision API（支持 Claude 和 GLM）实时识别 Switch 游戏画面中的剧情文本并翻译。OBS Source 类型，在属性面板中配置，手动触发（快捷键）。
 
 ---
 
@@ -33,9 +33,12 @@ cmake --build obs-plugin/build --target install-plugin
 ### 源文件（`obs-plugin/src/`）
 
 - `plugin-main.cpp` — OBS 模块入口，仅调用 `register_translate_source()`
-- `translate-source.cpp` — 核心逻辑：注册 `game_translator_source` OBS Source、帧捕获、定时器、按钮回调
-- `claude-api.cpp` — Claude API 调用：base64 编码 → libcurl POST → nlohmann/json 解析响应
-- `image-encode.cpp` — BGRA→RGB 转换 → stb_image_resize（缩至 max_width=960）→ stb_image_write JPEG（quality=50）
+- `translate-source.cpp` — 核心逻辑：注册 `game_translator_source` OBS Source、帧捕获、定时器、快捷键回调
+- `llm-provider.cpp` / `llm-provider.h` — `LlmProvider` 抽象基类 + `create_provider()` 工厂
+- `claude-provider.cpp` — Claude Messages API 实现
+- `glm-provider.cpp` — GLM（智谱 AI）API 实现
+- `llm-utils.cpp` / `llm-utils.h` — 语言配置、`build_system_prompt()`、base64 编码、libcurl HTTP POST
+- `image-encode.cpp` — BGRA→RGB 转换 → stb_image_resize（缩至 max_width=480）→ stb_image_write JPEG（quality=50）
 
 ### 双捕获模式（最重要的架构概念）
 
@@ -57,10 +60,13 @@ cmake --build obs-plugin/build --target install-plugin
 
 ### System Prompt 位置
 
-仅存在于 `obs-plugin/src/claude-api.cpp` 顶部的 `SYSTEM_PROMPT` 常量。
+在 `obs-plugin/src/llm-utils.cpp:31` 的 `build_system_prompt(target_language)` 中动态构建，不是常量。根据用户配置的目标语言（`get_lang_config()`，支持 zh/ja/en）拼出对应的 language name 和 "no text detected" 回复文案。Claude 和 GLM provider 共用同一份 system prompt。
 
 ---
 
 ## API Key 配置
 
-属性面板的"Anthropic API Key"字段必填，不设置则无法翻译。
+属性面板有两个关键字段：
+
+- **LLM Provider**：下拉选择 `claude` 或 `glm`（默认 `claude`）
+- **API Key**：对应所选 provider 的密钥，必填，不设置则无法翻译

@@ -15,7 +15,7 @@ An OBS plugin that captures your game screen and translates story dialogue using
 - **Two capture modes:**
   - *Current scene* — hooks into OBS raw video callback, zero extra overhead
   - *Specific source* — off-screen renders a named OBS source via `gs_texrender`
-- **Manual translate** — click the button in Properties, or press **F9**
+- **Manual translate** — press **F9** in OBS
 - **Clear translation** — press **F10**
 - **Auto-clear** — translation disappears after a configurable number of seconds
 - **Text overlay** — uses OBS FreeType text source; configurable font, color, background opacity, and width
@@ -54,14 +54,14 @@ make install   # copies plugin to ~/Library/Application Support/obs-studio/plugi
 | Overlay Width | Fixed pixel width of the text block |
 | Auto Clear (seconds) | How long before the translation fades out |
 
-4. Click **Translate Now** to test, or press **F9** in OBS.
+4. Press **F9** in OBS to translate.
 
 ## How it works
 
 ```
 Game frame
   → BGRA pixels captured from OBS callback or gs_texrender
-  → resized to 960px wide (stb_image_resize)
+  → resized to 480px wide (stb_image_resize)
   → JPEG encoded at quality 50 (stb_image_write)
   → base64 encoded
   → sent to LLM vision API (libcurl POST)
