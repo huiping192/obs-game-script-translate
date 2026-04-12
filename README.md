@@ -2,6 +2,10 @@
 
 An OBS plugin that captures your game screen and translates story dialogue using a vision LLM. The translation is rendered as a text overlay directly on the OBS source.
 
+<p align="center">
+  <img src="sample.png" alt="Game Translator Screenshot" width="800">
+</p>
+
 ## Requirements
 
 - macOS (arm64), deployment target 12.0
@@ -53,6 +57,10 @@ make install   # copies plugin to ~/Library/Application Support/obs-studio/plugi
 | Background Opacity | Semi-transparent black background (0–100%) |
 | Overlay Width | Fixed pixel width of the text block |
 | Auto Clear (seconds) | How long before the translation fades out |
+
+<p align="center">
+  <img src="setting.png" alt="OBS Properties Panel" width="520">
+</p>
 
 4. Press **F9** in OBS to translate.
 
