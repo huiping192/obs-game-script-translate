@@ -65,7 +65,10 @@ find_package(CURL REQUIRED)
 add_library(obs-game-translator MODULE
     src/plugin-main.cpp
     src/translate-source.cpp
-    src/claude-api.cpp
+    src/llm-provider.cpp
+    src/llm-utils.cpp
+    src/claude-provider.cpp
+    src/glm-provider.cpp
     src/image-encode.cpp
 )
 

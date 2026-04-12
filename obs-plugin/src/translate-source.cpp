@@ -1,5 +1,5 @@
 #include "translate-source.h"
-#include "claude-api.h"   // analyze_image_data
+#include "llm-provider.h" // analyze_image_data
 #include "image-encode.h"
 #include <obs-module.h>
 #include <atomic>
