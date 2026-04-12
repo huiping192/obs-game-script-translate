@@ -159,3 +159,40 @@ elseif(WIN32)
 else()
     message(WARNING "Unsupported platform; only macOS and Windows are tested.")
 endif()
+
+# ── Tests ──────────────────────────────────────────────────────────────────
+option(BUILD_TESTS "Build unit tests" OFF)
+
+if(BUILD_TESTS)
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.5.2
+    )
+    FetchContent_MakeAvailable(Catch2)
+
+    add_executable(obs-game-translator-tests
+        tests/stubs/obs_stub.cpp
+        tests/test_image_encode.cpp
+        tests/test_base64.cpp
+        tests/test_system_prompt.cpp
+        tests/test_providers.cpp
+        src/image-encode.cpp
+        src/llm-utils.cpp
+        src/claude-provider.cpp
+        src/glm-provider.cpp
+        src/llm-provider.cpp
+    )
+    target_include_directories(obs-game-translator-tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${stb_SOURCE_DIR}"
+    )
+    target_link_libraries(obs-game-translator-tests
+        PRIVATE Catch2::Catch2WithMain
+                CURL::libcurl
+                nlohmann_json::nlohmann_json
+    )
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(obs-game-translator-tests)
+endif()

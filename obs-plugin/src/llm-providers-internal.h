@@ -3,6 +3,7 @@
 #include <curl/curl.h>
 
 class ClaudeProvider final : public LlmProvider {
+    friend class ProviderTestAccess;
 public:
     using LlmProvider::LlmProvider;
 protected:
@@ -16,6 +17,7 @@ protected:
 };
 
 class GlmProvider final : public LlmProvider {
+    friend class ProviderTestAccess;
 public:
     using LlmProvider::LlmProvider;
 protected:

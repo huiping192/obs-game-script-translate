@@ -8,6 +8,7 @@
 struct curl_slist;
 
 class LlmProvider {
+    friend class ProviderTestAccess;
 public:
     virtual ~LlmProvider() = default;
 
