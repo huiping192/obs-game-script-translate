@@ -355,14 +355,19 @@ static void translate_destroy(void *priv)
 static void translate_update(void *priv, obs_data_t *settings)
 {
     auto *data = static_cast<TranslateData *>(priv);
-    std::lock_guard<std::mutex> lock(data->result_mutex);
-    data->api_key            = obs_data_get_string(settings, "api_key");
-    data->llm_provider       = obs_data_get_string(settings, "llm_provider");
-    data->target_language    = obs_data_get_string(settings, "target_language");
-    data->target_source_name = obs_data_get_string(settings, "target_source");
-    data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
-    data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
-    data->auto_clear_seconds = (int)obs_data_get_int(settings, "auto_clear_seconds");
+
+    uint32_t custom_width;
+    {
+        std::lock_guard<std::mutex> lock(data->result_mutex);
+        data->api_key            = obs_data_get_string(settings, "api_key");
+        data->llm_provider       = obs_data_get_string(settings, "llm_provider");
+        data->target_language    = obs_data_get_string(settings, "target_language");
+        data->target_source_name = obs_data_get_string(settings, "target_source");
+        data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
+        data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
+        data->auto_clear_seconds = (int)obs_data_get_int(settings, "auto_clear_seconds");
+        custom_width             = data->custom_width;
+    }
 
     if (data->text_source) {
         obs_data_t *ts = obs_data_create();
@@ -375,7 +380,7 @@ static void translate_update(void *priv, obs_data_t *settings)
         obs_data_set_int(ts, "color1", color);
         obs_data_set_int(ts, "color2", color);
         obs_data_set_bool(ts, "word_wrap", true);
-        obs_data_set_int(ts, "custom_width", obs_data_get_int(settings, "overlay_custom_width"));
+        obs_data_set_int(ts, "custom_width", custom_width);
         obs_source_update(data->text_source, ts);
         obs_data_release(ts);
     }
