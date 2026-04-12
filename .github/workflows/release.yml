@@ -118,12 +118,30 @@ jobs:
           New-Item -ItemType Directory -Path $dataDir -Force
           Copy-Item "obs-plugin\build\obs-game-translator.dll" "$pkgDir\"
           Copy-Item "obs-plugin\data\locale\*.ini" "$dataDir\"
+          # Bundle libcurl.dll explicitly — don't rely on OBS's bundled copy
+          $curlDll = Get-ChildItem -Recurse -Filter "libcurl.dll" `
+            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" |
+            Select-Object -First 1
+          if (-not $curlDll) { Write-Error "libcurl.dll not found in vcpkg"; exit 1 }
+          Copy-Item $curlDll.FullName "$pkgDir\"
           Compress-Archive -Path "pkg\obs-game-translator" -DestinationPath "obs-game-translator-windows-x64.zip"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\obs-game-translator.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x64
           path: obs-game-translator-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-installer
+          path: obs-game-translator-windows-x64-installer.exe
 
   # ── GitHub Release ────────────────────────────────────────────────────────
   release:
@@ -142,6 +160,10 @@ jobs:
         with:
           name: windows-x64
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-installer
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -149,3 +171,4 @@ jobs:
           files: |
             obs-game-translator-macos-arm64.zip
             obs-game-translator-windows-x64.zip
+            obs-game-translator-windows-x64-installer.exe

@@ -8,9 +8,17 @@ An OBS plugin that captures your game screen and translates story dialogue using
 
 ## Requirements
 
-- macOS (arm64), deployment target 12.0
+- macOS (arm64) or Windows 10/11 (x64)
 - OBS Studio 29+
 - An API key from Anthropic (Claude) or Zhipu AI (GLM)
+
+## Install
+
+**Windows** — download `obs-game-translator-windows-x64-installer.exe` from [Releases](../../releases), double-click, next-next-finish. The plugin is installed to `%APPDATA%\obs-studio\plugins\` without admin rights.
+
+**macOS** — download `obs-game-translator-macos-arm64.zip`, unzip, and copy `obs-game-translator.plugin` to `~/Library/Application Support/obs-studio/plugins/`.
+
+Restart OBS after installing.
 
 ## Features
 
