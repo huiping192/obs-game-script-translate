@@ -10,6 +10,7 @@
 #include <util/bmem.h>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -65,6 +66,9 @@ struct TranslateData {
     std::atomic<bool> voice_running{false};
     std::atomic<bool> voice_capture_requested{false};
     obs_hotkey_id voice_hotkey_id = OBS_INVALID_HOTKEY_ID;
+
+    std::atomic<bool> loading_error{false};
+    std::chrono::steady_clock::time_point loading_error_time;
 };
 
 // Forward declarations
@@ -118,6 +122,11 @@ static void start_translation_worker(TranslateData *data,
         obs_source_update_properties(source);
 
         data->translating.store(false);
+
+        if (result.empty()) {
+            data->loading_error.store(true);
+            data->loading_error_time = std::chrono::steady_clock::now();
+        }
     });
 }
 
@@ -186,6 +195,8 @@ static void start_voice_worker(TranslateData *data,
         }
         if (audio.empty()) {
             blog(LOG_ERROR, "[game-translator] voice: TTS returned empty audio");
+            data->loading_error.store(true);
+            data->loading_error_time = std::chrono::steady_clock::now();
             data->voice_running.store(false);
             return;
         }
@@ -551,6 +562,7 @@ static void clear_translation(TranslateData *data)
         data->text_dirty     = true;
         data->has_translation = false;
     }
+    data->loading_error.store(false);
     obs_data_t *settings = obs_source_get_settings(data->source);
     obs_data_set_string(settings, "translation_result", "");
     obs_data_release(settings);
@@ -559,7 +571,26 @@ static void clear_translation(TranslateData *data)
 
 // ── Video rendering ───────────────────────────────────────────────────────
 
+static bool is_any_loading(TranslateData *data)
+{
+    return data->translating.load() || data->voice_running.load()
+        || data->manual_capture_requested.load() || data->voice_capture_requested.load();
+}
 
+static void draw_dot(gs_effect_t *solid, gs_eparam_t *color_param,
+                     float x, float y, float size, const struct vec4 &color)
+{
+    gs_effect_set_vec4(color_param, &color);
+    gs_matrix_push();
+    gs_matrix_translate3f(x, y, 0.0f);
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+    while (gs_effect_loop(solid, "Solid")) {
+        gs_draw_sprite(nullptr, 0, (uint32_t)size, (uint32_t)size);
+    }
+    gs_blend_state_pop();
+    gs_matrix_pop();
+}
 
 static void translate_video_tick(void *priv, float)
 {
@@ -597,6 +628,12 @@ static void translate_video_tick(void *priv, float)
         if (elapsed >= std::chrono::seconds(auto_secs))
             clear_translation(data);
     }
+
+    if (data->loading_error.load()) {
+        auto elapsed = std::chrono::steady_clock::now() - data->loading_error_time;
+        if (elapsed >= std::chrono::seconds(2))
+            data->loading_error.store(false);
+    }
 }
 
 static void translate_video_render(void *priv, gs_effect_t *)
@@ -605,34 +642,67 @@ static void translate_video_render(void *priv, gs_effect_t *)
     if (!data->text_source)
         return;
 
+    bool is_loading = is_any_loading(data);
+    bool is_error   = data->loading_error.load();
+
     uint32_t th = obs_source_get_height(data->text_source);
 
-    if (th == 0) {
+    if (th == 0 && !is_loading && !is_error) {
         obs_source_video_render(data->text_source);
         return;
     }
 
-    uint32_t total_w = data->custom_width + 2 * (uint32_t)OVERLAY_PADDING;
-    uint32_t total_h = th                 + 2 * (uint32_t)OVERLAY_PADDING;
+    uint32_t total_w, total_h;
+    if (th > 0) {
+        total_w = data->custom_width + 2 * (uint32_t)OVERLAY_PADDING;
+        total_h = th                 + 2 * (uint32_t)OVERLAY_PADDING;
+    } else {
+        total_w = 2 * (uint32_t)OVERLAY_PADDING + 10;
+        total_h = 2 * (uint32_t)OVERLAY_PADDING + 10;
+    }
 
     gs_effect_t *solid       = obs_get_base_effect(OBS_EFFECT_SOLID);
     gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
 
-    struct vec4 bg;
-    vec4_set(&bg, 0.0f, 0.0f, 0.0f, (float)data->bg_opacity / 100.0f);
-    gs_effect_set_vec4(color_param, &bg);
+    if (th > 0) {
+        struct vec4 bg;
+        vec4_set(&bg, 0.0f, 0.0f, 0.0f, (float)data->bg_opacity / 100.0f);
+        gs_effect_set_vec4(color_param, &bg);
 
-    gs_blend_state_push();
-    gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
-    while (gs_effect_loop(solid, "Solid")) {
-        gs_draw_sprite(nullptr, 0, total_w, total_h);
+        gs_blend_state_push();
+        gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+        while (gs_effect_loop(solid, "Solid")) {
+            gs_draw_sprite(nullptr, 0, total_w, total_h);
+        }
+        gs_blend_state_pop();
     }
-    gs_blend_state_pop();
 
-    gs_matrix_push();
-    gs_matrix_translate3f((float)OVERLAY_PADDING, (float)OVERLAY_PADDING, 0.0f);
-    obs_source_video_render(data->text_source);
-    gs_matrix_pop();
+    if (th > 0) {
+        gs_matrix_push();
+        gs_matrix_translate3f((float)OVERLAY_PADDING, (float)OVERLAY_PADDING, 0.0f);
+        obs_source_video_render(data->text_source);
+        gs_matrix_pop();
+    }
+
+    if (is_loading) {
+        auto now_us = std::chrono::steady_clock::now().time_since_epoch().count();
+        float seconds = (float)(now_us % 1000000000) / 1000000000.0f;
+        float alpha = 0.3f + 0.7f * (0.5f + 0.5f * sinf(seconds * 6.2831853f));
+
+        struct vec4 dot_color;
+        vec4_set(&dot_color, 1.0f, 0.6f, 0.0f, alpha);
+        draw_dot(solid, color_param,
+                 (float)total_w - (float)OVERLAY_PADDING - 10.0f,
+                 (float)OVERLAY_PADDING, 10.0f, dot_color);
+    }
+
+    if (is_error) {
+        struct vec4 err_color;
+        vec4_set(&err_color, 1.0f, 0.2f, 0.2f, 0.9f);
+        draw_dot(solid, color_param,
+                 (float)total_w - (float)OVERLAY_PADDING - 10.0f,
+                 (float)OVERLAY_PADDING, 10.0f, err_color);
+    }
 }
 
 static uint32_t translate_get_width(void *priv)
@@ -641,7 +711,11 @@ static uint32_t translate_get_width(void *priv)
     if (!data->text_source)
         return 0;
     uint32_t th = obs_source_get_height(data->text_source);
-    return th > 0 ? data->custom_width + 2 * (uint32_t)OVERLAY_PADDING : 0;
+    if (th > 0)
+        return data->custom_width + 2 * (uint32_t)OVERLAY_PADDING;
+    if (is_any_loading(data) || data->loading_error.load())
+        return 2 * (uint32_t)OVERLAY_PADDING + 10;
+    return 0;
 }
 
 static uint32_t translate_get_height(void *priv)
@@ -650,7 +724,11 @@ static uint32_t translate_get_height(void *priv)
     if (!data->text_source)
         return 0;
     uint32_t th = obs_source_get_height(data->text_source);
-    return th > 0 ? th + 2 * (uint32_t)OVERLAY_PADDING : 0;
+    if (th > 0)
+        return th + 2 * (uint32_t)OVERLAY_PADDING;
+    if (is_any_loading(data) || data->loading_error.load())
+        return 2 * (uint32_t)OVERLAY_PADDING + 10;
+    return 0;
 }
 
 // ── Properties panel ──────────────────────────────────────────────────────
@@ -762,6 +840,8 @@ static void trigger_translate(TranslateData *data)
     if (!data || data->translating.load())
         return;
 
+    data->loading_error.store(false);
+
     if (data->target_source_name.empty()) {
         data->manual_capture_requested.store(true);
     } else {
@@ -784,6 +864,8 @@ static void trigger_voice(TranslateData *data)
 {
     if (!data || data->voice_running.load())
         return;
+
+    data->loading_error.store(false);
 
     std::string api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider;
     {
