@@ -129,8 +129,7 @@ static void start_voice_worker(TranslateData *data,
                                 std::string llm_provider,
                                 std::string replicate_api_key,
                                 std::string gemini_api_key,
-                                std::string tts_provider,
-                                std::string target_language)
+                                std::string tts_provider)
 {
     data->voice_running.store(true);
     if (data->voice_worker.joinable())
@@ -144,11 +143,10 @@ static void start_voice_worker(TranslateData *data,
                                       llm_provider      = std::move(llm_provider),
                                       replicate_api_key = std::move(replicate_api_key),
                                       gemini_api_key    = std::move(gemini_api_key),
-                                      tts_provider      = std::move(tts_provider),
-                                      target_language   = std::move(target_language)]() mutable {
+                                      tts_provider      = std::move(tts_provider)]() mutable {
         blog(LOG_INFO, "[game-translator] voice pipeline start (tts=%s)", tts_provider.c_str());
 
-        VoiceAnalysis analysis = run_voice_analysis(api_key, llm_provider, jpeg, target_language, tts_provider);
+        VoiceAnalysis analysis = run_voice_analysis(api_key, llm_provider, jpeg, tts_provider);
         jpeg.clear();
 
         if (analysis.original_text.empty()) {
@@ -254,13 +252,13 @@ static void on_raw_video(void *param, struct video_data *frame)
         data->voice_capture_requested.store(false);
         auto jpeg_for_voice = jpeg;
         start_translation_worker(data, std::move(jpeg), api_key, llm_provider, target_language);
-        start_voice_worker(data, std::move(jpeg_for_voice), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider, target_language);
+        start_voice_worker(data, std::move(jpeg_for_voice), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider);
     } else if (want_translate) {
         data->manual_capture_requested.store(false);
         start_translation_worker(data, std::move(jpeg), api_key, llm_provider, target_language);
     } else {
         data->voice_capture_requested.store(false);
-        start_voice_worker(data, std::move(jpeg), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider, target_language);
+        start_voice_worker(data, std::move(jpeg), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider);
     }
 }
 
@@ -783,7 +781,7 @@ static void trigger_voice(TranslateData *data)
     if (!data || data->voice_running.load())
         return;
 
-    std::string api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider, target_language;
+    std::string api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider;
     {
         std::lock_guard<std::mutex> lock(data->result_mutex);
         api_key           = data->api_key;
@@ -791,7 +789,6 @@ static void trigger_voice(TranslateData *data)
         replicate_api_key = data->replicate_api_key;
         gemini_api_key    = data->gemini_api_key;
         tts_provider      = data->tts_provider;
-        target_language   = data->target_language;
     }
 
     bool is_gemini = (tts_provider == "gemini");
@@ -810,7 +807,7 @@ static void trigger_voice(TranslateData *data)
             blog(LOG_WARNING, "[game-translator] voice: 帧捕获失败");
             return;
         }
-        start_voice_worker(data, std::move(jpeg), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider, target_language);
+        start_voice_worker(data, std::move(jpeg), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider);
     }
 }
 
