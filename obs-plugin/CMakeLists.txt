@@ -84,6 +84,7 @@ add_library(obs-game-translator MODULE
     src/voice-cache.cpp
     src/voice-analysis.cpp
     src/tts-replicate.cpp
+    src/tts-gemini.cpp
     src/audio-output.cpp
 )
 

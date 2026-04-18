@@ -54,17 +54,25 @@ void VoiceCache::save(const std::string &path) const
     if (f) f << j.dump(2);
 }
 
-bool VoiceCache::get(const std::string &character, VoiceProfile &out) const
+bool VoiceCache::get(const std::string &character, VoiceProfile &out,
+                     const std::string &tts_provider) const
 {
-    auto it = map_.find(normalize(character));
+    std::string key = tts_provider.empty()
+                          ? normalize(character)
+                          : tts_provider + ":" + normalize(character);
+    auto it = map_.find(key);
     if (it == map_.end()) return false;
     out = it->second;
     return true;
 }
 
-void VoiceCache::set(const std::string &character, const VoiceProfile &profile)
+void VoiceCache::set(const std::string &character, const VoiceProfile &profile,
+                     const std::string &tts_provider)
 {
-    map_[normalize(character)] = profile;
+    std::string key = tts_provider.empty()
+                          ? normalize(character)
+                          : tts_provider + ":" + normalize(character);
+    map_[key] = profile;
 }
 
 void VoiceCache::clear()

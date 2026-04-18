@@ -14,11 +14,28 @@ static const char *SPEAKER_LIST =
     "Ono_Anna (playful Japanese female), "
     "Sohee (Korean female)";
 
-static std::string build_voice_system_prompt(const std::string &target_language)
+static const char *GEMINI_SPEAKER_LIST =
+    "Zephyr (bright), Puck (upbeat), Charon (informative), "
+    "Kore (firm), Fenrir (excitable), Leda (youthful), "
+    "Orus (firm), Aoede (breezy), Callirrhoe (easy-going), "
+    "Autonoe (bright), Enceladus (breathy), Iapetus (clear), "
+    "Umbriel (easy-going), Algieba (smooth), Despina (smooth), "
+    "Erinome (clear), Algenib (gravelly), Rasalgethi (informative), "
+    "Laomedeia (upbeat), Achernar (soft), Alnilam (firm), "
+    "Schedar (even), Gacrux (mature), Pulcherrima (forward), "
+    "Achird (friendly), Zubenelgenubi (casual), Vindemiatrix (gentle), "
+    "Sadachbia (lively), Sadaltager (knowledgeable), Sulafat (warm)";
+
+static std::string build_voice_system_prompt(const std::string &target_language,
+                                              const std::string &tts_provider)
 {
     const char *lang = "Simplified Chinese (中文)";
     if (target_language == "ja") lang = "Japanese (日本語)";
     else if (target_language == "en") lang = "English";
+
+    const char *speakers = (tts_provider == "gemini")
+                               ? GEMINI_SPEAKER_LIST
+                               : SPEAKER_LIST;
 
     return std::string(
         "You are a game screen analyzer. Your tasks:\n"
@@ -29,7 +46,7 @@ static std::string build_voice_system_prompt(const std::string &target_language)
         "Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.\n"
         "5. Determine the speaker character name. Use \"narrator\" if not identifiable.\n"
         "6. Select ONE voice speaker from this list that best fits the character's type:\n"
-        "   " + SPEAKER_LIST + "\n"
+        "   " + std::string(speakers) + "\n"
         "7. Write a short instruct string for the delivery style (e.g. \"Speak in a deep, menacing tone\").\n\n"
         "Return ONLY a strict JSON object. No markdown, no extra text:\n"
         "{\"character\":\"\",\"original_text\":\"\",\"language\":\"Chinese\",\"translated_text\":\"\",\"speaker\":\"\",\"instruct\":\"\"}\n\n"
@@ -40,11 +57,12 @@ static std::string build_voice_system_prompt(const std::string &target_language)
 VoiceAnalysis run_voice_analysis(const std::string &api_key,
                                   const std::string &llm_provider,
                                   const std::vector<uint8_t> &jpeg_bytes,
-                                  const std::string &target_language)
+                                  const std::string &target_language,
+                                  const std::string &tts_provider)
 {
     if (api_key.empty() || jpeg_bytes.empty()) return {};
 
-    std::string sys = build_voice_system_prompt(target_language);
+    std::string sys = build_voice_system_prompt(target_language, tts_provider);
     std::string content = analyze_image_custom(
         jpeg_bytes, "image/jpeg", api_key, llm_provider, sys,
         "Analyze this game screenshot.");
@@ -69,7 +87,8 @@ VoiceAnalysis run_voice_analysis(const std::string &api_key,
         result.original_text    = j.value("original_text",    "");
         result.detected_language = j.value("language",        "Japanese");
         result.translated_text  = j.value("translated_text",  "");
-        result.speaker          = j.value("speaker",          "Ryan");
+        const char *default_speaker = (tts_provider == "gemini") ? "Kore" : "Ryan";
+        result.speaker          = j.value("speaker",          default_speaker);
         result.instruct         = j.value("instruct",         "Speak clearly");
     } catch (...) {
         blog(LOG_ERROR, "[game-translator] voice analysis parse error: %s",

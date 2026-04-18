@@ -85,6 +85,37 @@ std::string base64_encode(const std::vector<uint8_t> &data)
     return out;
 }
 
+// ── Base64 decode ─────────────────────────────────────────────────────────
+
+static int b64_val(char c)
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+std::vector<uint8_t> base64_decode(const std::string &encoded)
+{
+    std::vector<uint8_t> out;
+    out.reserve(encoded.size() * 3 / 4);
+    int buf = 0, bits = 0;
+    for (char c : encoded) {
+        if (c == '=' || c == '\n' || c == '\r' || c == ' ') continue;
+        int v = b64_val(c);
+        if (v < 0) continue;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((buf >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
 // ── CURL helpers ──────────────────────────────────────────────────────────
 
 static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)

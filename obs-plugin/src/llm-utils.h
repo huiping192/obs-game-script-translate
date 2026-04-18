@@ -14,6 +14,7 @@ struct LangConfig {
 const LangConfig &get_lang_config(const std::string &lang);
 std::string build_system_prompt(const std::string &target_language);
 std::string base64_encode(const std::vector<uint8_t> &data);
+std::vector<uint8_t> base64_decode(const std::string &encoded);
 std::string do_post(const char *url, struct curl_slist *headers,
                     const std::string &body_str);
 std::string do_get(const char *url, struct curl_slist *headers);

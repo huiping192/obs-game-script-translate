@@ -16,4 +16,5 @@ struct VoiceAnalysis {
 VoiceAnalysis run_voice_analysis(const std::string &api_key,
                                   const std::string &llm_provider,
                                   const std::vector<uint8_t> &jpeg_bytes,
-                                  const std::string &target_language);
+                                  const std::string &target_language,
+                                  const std::string &tts_provider = "replicate");
