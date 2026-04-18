@@ -50,7 +50,7 @@ void push_audio_to_obs_source(obs_source_t *source,
     uint64_t ts = os_gettime_ns();
 
     for (ma_uint64 off = 0; off < total_frames; off += PUSH_CHUNK) {
-        uint32_t chunk = (uint32_t)std::min((ma_uint64)PUSH_CHUNK, total_frames - off);
+        uint32_t chunk = (uint32_t)(std::min)((ma_uint64)PUSH_CHUNK, total_frames - off);
 
         struct obs_source_audio osa = {};
         osa.data[0]        = reinterpret_cast<const uint8_t *>(pcm.data() + off * 2);

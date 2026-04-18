@@ -149,6 +149,8 @@ elseif(WIN32)
         set(OBS_DIR "C:/Program Files/obs-studio" CACHE PATH "OBS Studio installation directory")
     endif()
 
+    target_compile_definitions(obs-game-translator PRIVATE NOMINMAX)
+
     target_link_libraries(obs-game-translator PRIVATE
         "${OBS_DIR}/bin/64bit/obs.lib"
     )
