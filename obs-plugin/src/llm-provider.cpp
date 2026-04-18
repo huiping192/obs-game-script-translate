@@ -45,6 +45,31 @@ std::string LlmProvider::analyze_image(const std::vector<uint8_t> &image_data,
     }
 }
 
+std::string LlmProvider::analyze_image_custom(const std::vector<uint8_t> &image_data,
+                                               const std::string &media_type,
+                                               const std::string &system_prompt,
+                                               const std::string &user_message)
+{
+    if (api_key_.empty() || image_data.empty())
+        return {};
+
+    std::string b64            = base64_encode(image_data);
+    json body                  = build_request_body(b64, media_type, system_prompt,
+                                                    user_message.c_str());
+    struct curl_slist *headers = build_headers();
+    std::string raw            = do_post(endpoint_url().c_str(), headers, body.dump());
+    curl_slist_free_all(headers);
+
+    try {
+        json resp = json::parse(raw);
+        if (resp.contains("error") && resp["error"].is_object())
+            return {};
+        return extract_response_text(resp);
+    } catch (...) {
+        return {};
+    }
+}
+
 std::unique_ptr<LlmProvider> LlmProvider::create(const std::string &provider,
                                                    const std::string &api_key)
 {
@@ -61,4 +86,15 @@ std::string analyze_image_data(const std::vector<uint8_t> &image_data,
 {
     auto llm = LlmProvider::create(provider, api_key);
     return llm->analyze_image(image_data, media_type, target_language);
+}
+
+std::string analyze_image_custom(const std::vector<uint8_t> &image_data,
+                                 const std::string &media_type,
+                                 const std::string &api_key,
+                                 const std::string &provider,
+                                 const std::string &system_prompt,
+                                 const std::string &user_message)
+{
+    auto llm = LlmProvider::create(provider, api_key);
+    return llm->analyze_image_custom(image_data, media_type, system_prompt, user_message);
 }

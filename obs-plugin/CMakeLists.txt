@@ -58,6 +58,17 @@ FetchContent_Declare(stb
 )
 FetchContent_MakeAvailable(stb)
 
+# ── miniaudio (header-only, decoding only) ────────────────────────────────
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.21
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(miniaudio)
+if(NOT miniaudio_POPULATED)
+    FetchContent_Populate(miniaudio)
+endif()
+
 # ── CURL ──────────────────────────────────────────────────────────────────
 find_package(CURL REQUIRED)
 
@@ -70,12 +81,17 @@ add_library(obs-game-translator MODULE
     src/claude-provider.cpp
     src/glm-provider.cpp
     src/image-encode.cpp
+    src/voice-cache.cpp
+    src/voice-analysis.cpp
+    src/tts-replicate.cpp
+    src/audio-output.cpp
 )
 
 target_include_directories(obs-game-translator PRIVATE
     "${OBS_HEADERS_DIR}/libobs"
     "${OBS_HEADERS_DIR}"
     "${stb_SOURCE_DIR}"
+    "${miniaudio_SOURCE_DIR}"
 )
 
 target_link_libraries(obs-game-translator PRIVATE

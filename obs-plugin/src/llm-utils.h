@@ -16,3 +16,5 @@ std::string build_system_prompt(const std::string &target_language);
 std::string base64_encode(const std::vector<uint8_t> &data);
 std::string do_post(const char *url, struct curl_slist *headers,
                     const std::string &body_str);
+std::string do_get(const char *url, struct curl_slist *headers);
+std::vector<uint8_t> do_get_bytes(const char *url, struct curl_slist *headers);

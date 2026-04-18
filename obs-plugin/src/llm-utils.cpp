@@ -85,13 +85,62 @@ std::string base64_encode(const std::vector<uint8_t> &data)
     return out;
 }
 
-// ── CURL helper ───────────────────────────────────────────────────────────
+// ── CURL helpers ──────────────────────────────────────────────────────────
 
 static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
     auto *buf = static_cast<std::string *>(userdata);
     buf->append(ptr, size * nmemb);
     return size * nmemb;
+}
+
+static size_t write_bytes_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
+{
+    auto *buf = static_cast<std::vector<uint8_t> *>(userdata);
+    buf->insert(buf->end(), (const uint8_t *)ptr, (const uint8_t *)ptr + size * nmemb);
+    return size * nmemb;
+}
+
+std::string do_get(const char *url, struct curl_slist *headers)
+{
+    CURL *curl = curl_easy_init();
+    if (!curl) return {};
+
+    std::string response_buf;
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
+    if (headers)
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &response_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       30L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) return {};
+    return response_buf;
+}
+
+std::vector<uint8_t> do_get_bytes(const char *url, struct curl_slist *headers)
+{
+    CURL *curl = curl_easy_init();
+    if (!curl) return {};
+
+    std::vector<uint8_t> buf;
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
+    if (headers)
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_bytes_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       60L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) return {};
+    return buf;
 }
 
 std::string do_post(const char *url,
