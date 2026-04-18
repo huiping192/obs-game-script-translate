@@ -473,6 +473,8 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
         blog(LOG_WARNING, "[game-translator] text_ft2_source_v2 不可用，翻译将只显示在属性面板");
     obs_data_release(ts);
 
+    obs_source_set_monitoring_type(source, OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT);
+
     return data;
 }
 
@@ -556,6 +558,8 @@ static void clear_translation(TranslateData *data)
 }
 
 // ── Video rendering ───────────────────────────────────────────────────────
+
+
 
 static void translate_video_tick(void *priv, float)
 {
