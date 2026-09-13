@@ -64,7 +64,9 @@ curl -s -X POST --data-binary @shot.jpg http://127.0.0.1:8765/f8/debug | python3
 
 ## Windows 端
 
-插件属性面板「TTS 服务地址」填这台 mac 的局域网地址，例如 `http://192.168.11.75:8765`。
+插件属性面板「TTS 服务地址」填这台 mac 的 mDNS 地址：`http://Mac-mini-m2.local:8765`
+（`scutil --get LocalHostName` 可查主机名）。**别用 IP** —— DHCP 分配的地址会变，
+到时候 F8 会莫名失灵；`.local` 名字 Windows 10+ 原生支持，IP 怎么变都不受影响。
 服务绑在 `0.0.0.0`，局域网内可直接访问（家用网络够用，公网环境别这么开）。
 另外这台 mac 不能睡眠，否则 Windows 端会随机调不通：`sudo pmset -a sleep 0`。
 
