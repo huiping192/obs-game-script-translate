@@ -80,6 +80,7 @@ add_library(obs-game-translator MODULE
     src/llm-utils.cpp
     src/claude-provider.cpp
     src/glm-provider.cpp
+    src/deepseek-provider.cpp
     src/image-encode.cpp
     src/voice-cache.cpp
     src/voice-analysis.cpp
@@ -200,6 +201,7 @@ if(BUILD_TESTS)
         src/llm-utils.cpp
         src/claude-provider.cpp
         src/glm-provider.cpp
+        src/deepseek-provider.cpp
         src/llm-provider.cpp
     )
     target_include_directories(obs-game-translator-tests PRIVATE

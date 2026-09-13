@@ -25,7 +25,7 @@ struct TranslateData {
     obs_source_t *source;
 
     std::string api_key;
-    std::string llm_provider;     // "claude" | "glm"
+    std::string llm_provider;     // "claude" | "glm" | "deepseek"
     std::string target_language;  // "zh" | "ja" | "en"
     std::mutex  result_mutex;
     std::string translation;
@@ -784,6 +784,7 @@ static obs_properties_t *translate_get_properties(void *priv)
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     obs_property_list_add_string(llm_list, obs_module_text("LLMProvider.Claude"), "claude");
     obs_property_list_add_string(llm_list, obs_module_text("LLMProvider.GLM"), "glm");
+    obs_property_list_add_string(llm_list, obs_module_text("LLMProvider.DeepSeek"), "deepseek");
 
     obs_property_t *lang_list = obs_properties_add_list(
         props, "target_language", obs_module_text("TargetLanguage"),

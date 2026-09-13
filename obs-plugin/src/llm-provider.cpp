@@ -75,6 +75,8 @@ std::unique_ptr<LlmProvider> LlmProvider::create(const std::string &provider,
 {
     if (provider == "glm")
         return std::make_unique<GlmProvider>(api_key);
+    if (provider == "deepseek")
+        return std::make_unique<DeepSeekProvider>(api_key);
     return std::make_unique<ClaudeProvider>(api_key);
 }
 

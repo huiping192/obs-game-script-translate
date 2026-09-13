@@ -129,3 +129,73 @@ TEST_CASE("GlmProvider extract_response_text returns empty on bad json",
 	text = ProviderTestAccess::call_extract_response_text(p, empty_resp);
 	CHECK(text.empty());
 }
+
+static DeepSeekProvider make_deepseek()
+{
+	return DeepSeekProvider("test-key");
+}
+
+TEST_CASE("DeepSeekProvider build_request_body structure",
+          "[provider][deepseek]")
+{
+	auto p = make_deepseek();
+	auto body = ProviderTestAccess::call_build_request_body(
+		p, "b64data", "image/jpeg", "sys prompt", "translate this");
+
+	CHECK(body["model"] == "deepseek-flash");
+	CHECK(body["max_tokens"] == 2048);
+
+	auto messages = body["messages"];
+	REQUIRE(messages.is_array());
+	REQUIRE(messages.size() == 2);
+	CHECK(messages[0]["role"] == "system");
+	CHECK(messages[0]["content"] == "sys prompt");
+	CHECK(messages[1]["role"] == "user");
+
+	auto content = messages[1]["content"];
+	REQUIRE(content.is_array());
+	REQUIRE(content.size() == 2);
+	CHECK(content[0]["type"] == "image_url");
+	CHECK(content[0]["image_url"]["url"] ==
+	      "data:image/jpeg;base64,b64data");
+	CHECK(content[1]["type"] == "text");
+	CHECK(content[1]["text"] == "translate this");
+}
+
+// Reasoning tokens bill as output and cost ~18x more without helping quality,
+// so a regression that drops this field would silently inflate the bill.
+TEST_CASE("DeepSeekProvider disables thinking",
+          "[provider][deepseek]")
+{
+	auto p = make_deepseek();
+	auto body = ProviderTestAccess::call_build_request_body(
+		p, "b64data", "image/jpeg", "sys prompt", "translate this");
+
+	REQUIRE(body.contains("thinking"));
+	CHECK(body["thinking"]["type"] == "disabled");
+	CHECK_FALSE(body.contains("reasoning_effort"));
+}
+
+TEST_CASE("DeepSeekProvider extract_response_text parses choices",
+          "[provider][deepseek]")
+{
+	auto p = make_deepseek();
+	nlohmann::json resp = {
+		{"choices",
+		 {{{"message", {{"content", "翻译结果"}}}}}}};
+	auto text = ProviderTestAccess::call_extract_response_text(p, resp);
+	CHECK(text == "翻译结果");
+}
+
+TEST_CASE("DeepSeekProvider extract_response_text returns empty on bad json",
+          "[provider][deepseek]")
+{
+	auto p = make_deepseek();
+	nlohmann::json resp = {{"error", "something"}};
+	auto text = ProviderTestAccess::call_extract_response_text(p, resp);
+	CHECK(text.empty());
+
+	nlohmann::json empty_resp = {};
+	text = ProviderTestAccess::call_extract_response_text(p, empty_resp);
+	CHECK(text.empty());
+}
