@@ -39,6 +39,8 @@ cmake --build obs-plugin/build --target install-plugin
 - `glm-provider.cpp` — GLM（智谱 AI）API 实现
 - `llm-utils.cpp` / `llm-utils.h` — 语言配置、`build_system_prompt()`、base64 编码、libcurl HTTP POST
 - `image-encode.cpp` — BGRA→RGB 转换 → stb_image_resize（缩至 max_width=480）→ stb_image_write JPEG（quality=50）
+- `tts-local.cpp` / `tts-local.h` — F8 朗读：POST 截图到本地 TTS 服务，拿回 wav
+- `audio-output.cpp` — miniaudio 解码 wav → PCM 推进 OBS 音轨
 
 ### 双捕获模式（最重要的架构概念）
 
@@ -58,6 +60,17 @@ cmake --build obs-plugin/build --target install-plugin
 - `translating`（`std::atomic<bool>`）防止并发重复触发
 - `gs_texrender` / `gs_stagesurf` 的创建/销毁必须在 `obs_enter_graphics()` / `obs_leave_graphics()` 中
 
+### F8 朗读（本地服务，零 API 成本）
+
+F8 和 F9 是两条独立的链路：**F9 看懂剧情（LLM 翻译后显示译文）**，**F8 听发音（朗读画面上的英文原文）**。
+
+F8 不走 LLM。截图 POST 给 `tts-server/`（本机跑的 Python 服务）→ macOS Vision framework 做 OCR → 置信度+词数两条规则筛出剧情对白 → `say -v Zoe` 合成 → 返回 wav → 推进 OBS 音轨。
+
+- 服务地址在属性面板「TTS 服务地址」配置，默认 `http://127.0.0.1:8765`
+- Windows 端填这台 mac 的局域网地址即可共用同一个服务，插件侧无平台相关代码
+- 画面没有对白时服务返回 **204**，插件静默不报错
+- 部署、接口、阈值调整见 `tts-server/README.md`
+
 ### System Prompt 位置
 
 在 `obs-plugin/src/llm-utils.cpp:31` 的 `build_system_prompt(target_language)` 中动态构建，不是常量。根据用户配置的目标语言（`get_lang_config()`，支持 zh/ja/en）拼出对应的 language name 和 "no text detected" 回复文案。Claude 和 GLM provider 共用同一份 system prompt。
@@ -69,4 +82,4 @@ cmake --build obs-plugin/build --target install-plugin
 属性面板有两个关键字段：
 
 - **LLM Provider**：下拉选择 `claude` 或 `glm`（默认 `claude`）
-- **API Key**：对应所选 provider 的密钥，必填，不设置则无法翻译
+- **API Key**：对应所选 provider 的密钥，必填，不设置则无法翻译（仅 F9 翻译需要，F8 朗读不需要任何 key）

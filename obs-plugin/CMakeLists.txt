@@ -82,10 +82,7 @@ add_library(obs-game-translator MODULE
     src/glm-provider.cpp
     src/deepseek-provider.cpp
     src/image-encode.cpp
-    src/voice-cache.cpp
-    src/voice-analysis.cpp
-    src/tts-replicate.cpp
-    src/tts-gemini.cpp
+    src/tts-local.cpp
     src/audio-output.cpp
 )
 

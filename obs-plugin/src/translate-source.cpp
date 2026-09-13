@@ -1,10 +1,7 @@
 #include "translate-source.h"
 #include "llm-provider.h"
 #include "image-encode.h"
-#include "voice-cache.h"
-#include "voice-analysis.h"
-#include "tts-replicate.h"
-#include "tts-gemini.h"
+#include "tts-local.h"
 #include "audio-output.h"
 #include <obs-module.h>
 #include <util/bmem.h>
@@ -18,6 +15,11 @@
 #include <vector>
 
 static const int OVERLAY_PADDING = 12;
+
+// F9 翻译要把图发给 LLM，小图省 token；F8 走本地 OCR 一个 token 都不花，
+// 用大图换识别精度 —— 字号偏小时 OCR 会读错（man really → than mally）。
+static const uint32_t VOICE_MAX_WIDTH = 1280;
+static const int      VOICE_QUALITY   = 85;
 
 // ── Source private data ───────────────────────────────────────────────────
 
@@ -57,11 +59,7 @@ struct TranslateData {
     uint32_t      custom_width = 800;   // fixed source width (pixels)
 
     // ── Voice (F8) ───────────────────────────────────────────────────────
-    std::string tts_provider;      // "replicate" | "gemini"
-    std::string replicate_api_key;
-    std::string gemini_api_key;
-    VoiceCache  voice_cache;
-    std::string voice_cache_path;
+    std::string tts_url;           // 本地 TTS 服务（OCR + 合成都在服务端）
     std::thread voice_worker;
     std::atomic<bool> voice_running{false};
     std::atomic<bool> voice_capture_requested{false};
@@ -134,11 +132,7 @@ static void start_translation_worker(TranslateData *data,
 
 static void start_voice_worker(TranslateData *data,
                                 std::vector<uint8_t> jpeg,
-                                std::string api_key,
-                                std::string llm_provider,
-                                std::string replicate_api_key,
-                                std::string gemini_api_key,
-                                std::string tts_provider)
+                                std::string tts_url)
 {
     data->voice_running.store(true);
     if (data->voice_worker.joinable())
@@ -147,62 +141,25 @@ static void start_voice_worker(TranslateData *data,
     obs_source_t *source = data->source;
 
     data->voice_worker = std::thread([data, source,
-                                      jpeg              = std::move(jpeg),
-                                      api_key           = std::move(api_key),
-                                      llm_provider      = std::move(llm_provider),
-                                      replicate_api_key = std::move(replicate_api_key),
-                                      gemini_api_key    = std::move(gemini_api_key),
-                                      tts_provider      = std::move(tts_provider)]() mutable {
-        blog(LOG_INFO, "[game-translator] voice pipeline start (tts=%s)", tts_provider.c_str());
-
-        VoiceAnalysis analysis = run_voice_analysis(api_key, llm_provider, jpeg, tts_provider);
+                                      jpeg    = std::move(jpeg),
+                                      tts_url = std::move(tts_url)]() mutable {
+        std::vector<uint8_t> wav;
+        TtsStatus st = synthesize_from_frame(tts_url, jpeg, wav);
         jpeg.clear();
 
-        if (analysis.original_text.empty()) {
-            blog(LOG_INFO, "[game-translator] voice: no text detected");
+        if (st == TtsStatus::NoText) {
+            blog(LOG_INFO, "[game-translator] voice: 画面中没有对白");
             data->voice_running.store(false);
             return;
         }
-
-        blog(LOG_INFO, "[game-translator] voice: character=%s speaker=%s lang=%s",
-             analysis.character.c_str(), analysis.speaker.c_str(), analysis.detected_language.c_str());
-
-        VoiceProfile profile = {analysis.speaker, analysis.instruct};
-        {
-            std::lock_guard<std::mutex> lock(data->result_mutex);
-            VoiceProfile cached;
-            if (data->voice_cache.get(analysis.character, cached, tts_provider)) {
-                profile = cached;
-            } else {
-                data->voice_cache.set(analysis.character, profile, tts_provider);
-                data->voice_cache.save(data->voice_cache_path);
-            }
-        }
-
-        std::vector<uint8_t> audio;
-        if (tts_provider == "gemini") {
-            audio = synthesize_speech_gemini(gemini_api_key,
-                                             analysis.original_text,
-                                             profile.speaker,
-                                             profile.instruct,
-                                             analysis.detected_language);
-        } else {
-            audio = synthesize_speech(replicate_api_key,
-                                      analysis.original_text,
-                                      profile.speaker,
-                                      profile.instruct,
-                                      analysis.detected_language);
-        }
-        if (audio.empty()) {
-            blog(LOG_ERROR, "[game-translator] voice: TTS returned empty audio");
+        if (st != TtsStatus::Ok) {
             data->loading_error.store(true);
             data->loading_error_time = std::chrono::steady_clock::now();
             data->voice_running.store(false);
             return;
         }
 
-        push_audio_to_obs_source(source, audio);
-
+        push_audio_to_obs_source(source, wav);
         data->voice_running.store(false);
     });
 }
@@ -238,44 +195,42 @@ static void on_raw_video(void *param, struct video_data *frame)
     }
 
     auto enc0 = std::chrono::steady_clock::now();
-    std::vector<uint8_t> jpeg = encode_bgra_to_jpeg(pixels.data(), cx, cy);
+    std::vector<uint8_t> jpeg_t, jpeg_v;
+    if (want_translate)
+        jpeg_t = encode_bgra_to_jpeg(pixels.data(), cx, cy);
+    if (want_voice)
+        jpeg_v = encode_bgra_to_jpeg(pixels.data(), cx, cy, VOICE_MAX_WIDTH, VOICE_QUALITY);
     auto enc1 = std::chrono::steady_clock::now();
-    if (jpeg.empty())
+    if ((want_translate && jpeg_t.empty()) || (want_voice && jpeg_v.empty()))
         return;
 
-    blog(LOG_INFO, "[game-translator] 捕获当前场景 %zu bytes，encode 耗时 %lld ms",
-         jpeg.size(),
+    blog(LOG_INFO, "[game-translator] 捕获当前场景 翻译 %zu bytes / 朗读 %zu bytes，encode 耗时 %lld ms",
+         jpeg_t.size(), jpeg_v.size(),
          std::chrono::duration_cast<std::chrono::milliseconds>(enc1 - enc0).count());
 
-    std::string api_key, replicate_api_key, gemini_api_key, llm_provider, tts_provider, target_language;
+    std::string api_key, llm_provider, target_language, tts_url;
     {
         std::lock_guard<std::mutex> lock(data->result_mutex);
-        api_key           = data->api_key;
-        replicate_api_key = data->replicate_api_key;
-        gemini_api_key    = data->gemini_api_key;
-        llm_provider      = data->llm_provider;
-        tts_provider      = data->tts_provider;
-        target_language   = data->target_language;
+        api_key         = data->api_key;
+        llm_provider    = data->llm_provider;
+        target_language = data->target_language;
+        tts_url         = data->tts_url;
     }
 
-    if (want_translate && want_voice) {
+    if (want_translate) {
         data->manual_capture_requested.store(false);
+        start_translation_worker(data, std::move(jpeg_t), api_key, llm_provider, target_language);
+    }
+    if (want_voice) {
         data->voice_capture_requested.store(false);
-        auto jpeg_for_voice = jpeg;
-        start_translation_worker(data, std::move(jpeg), api_key, llm_provider, target_language);
-        start_voice_worker(data, std::move(jpeg_for_voice), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider);
-    } else if (want_translate) {
-        data->manual_capture_requested.store(false);
-        start_translation_worker(data, std::move(jpeg), api_key, llm_provider, target_language);
-    } else {
-        data->voice_capture_requested.store(false);
-        start_voice_worker(data, std::move(jpeg), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider);
+        start_voice_worker(data, std::move(jpeg_v), tts_url);
     }
 }
 
 // ── Specific source: texrender frame capture ───────────────────────────────
 
-static std::vector<uint8_t> capture_source_frame(TranslateData *data)
+static std::vector<uint8_t> capture_source_frame(TranslateData *data,
+                                                  uint32_t max_width, int quality)
 {
     obs_source_t *target = obs_get_source_by_name(data->target_source_name.c_str());
     if (!target)
@@ -346,7 +301,7 @@ static std::vector<uint8_t> capture_source_frame(TranslateData *data)
         return {};
 
     auto enc0 = std::chrono::steady_clock::now();
-    auto jpeg = encode_bgra_to_jpeg(pixels.data(), cx, cy);
+    auto jpeg = encode_bgra_to_jpeg(pixels.data(), cx, cy, max_width, quality);
     auto enc1 = std::chrono::steady_clock::now();
     blog(LOG_INFO, "[game-translator] source 帧 encode 耗时 %lld ms，%zu bytes",
          std::chrono::duration_cast<std::chrono::milliseconds>(enc1 - enc0).count(),
@@ -381,9 +336,7 @@ static void translate_get_defaults(obs_data_t *settings)
     obs_data_set_default_int(settings,    "overlay_bg_opacity",   80);
     obs_data_set_default_int(settings,    "overlay_custom_width", 800);
     obs_data_set_default_int(settings,    "auto_clear_seconds",   5);
-    obs_data_set_default_string(settings, "replicate_api_key",    "");
-    obs_data_set_default_string(settings, "tts_provider",         "replicate");
-    obs_data_set_default_string(settings, "gemini_api_key",       "");
+    obs_data_set_default_string(settings, "tts_url",              "http://127.0.0.1:8765");
 }
 
 static void *translate_create(obs_data_t *settings, obs_source_t *source)
@@ -394,20 +347,12 @@ static void *translate_create(obs_data_t *settings, obs_source_t *source)
     data->llm_provider       = obs_data_get_string(settings, "llm_provider");
     data->target_language    = obs_data_get_string(settings, "target_language");
     data->target_source_name = obs_data_get_string(settings, "target_source");
-    data->replicate_api_key  = obs_data_get_string(settings, "replicate_api_key");
+    data->tts_url            = obs_data_get_string(settings, "tts_url");
     blog(LOG_INFO, "[game-translator] 加载设置: llm_provider=%s target_language=%s",
          data->llm_provider.c_str(), data->target_language.c_str());
     data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
     data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
     data->auto_clear_seconds = (int)obs_data_get_int(settings, "auto_clear_seconds");
-
-    // Load voice cache from plugin config dir
-    char *cfg = obs_module_config_path("voice_cache.json");
-    if (cfg) {
-        data->voice_cache_path = cfg;
-        bfree(cfg);
-    }
-    data->voice_cache.load(data->voice_cache_path);
 
     struct video_scale_info vsi = {};
     vsi.format = VIDEO_FORMAT_BGRA;
@@ -500,10 +445,6 @@ static void translate_destroy(void *priv)
     if (data->voice_worker.joinable())
         data->voice_worker.join();
 
-    // Persist voice cache on exit
-    if (!data->voice_cache_path.empty())
-        data->voice_cache.save(data->voice_cache_path);
-
     obs_source_release(data->text_source);
 
     obs_enter_graphics();
@@ -525,9 +466,7 @@ static void translate_update(void *priv, obs_data_t *settings)
         data->llm_provider       = obs_data_get_string(settings, "llm_provider");
         data->target_language    = obs_data_get_string(settings, "target_language");
         data->target_source_name = obs_data_get_string(settings, "target_source");
-        data->replicate_api_key  = obs_data_get_string(settings, "replicate_api_key");
-        data->tts_provider       = obs_data_get_string(settings, "tts_provider");
-        data->gemini_api_key     = obs_data_get_string(settings, "gemini_api_key");
+        data->tts_url            = obs_data_get_string(settings, "tts_url");
         data->bg_opacity         = (int)obs_data_get_int(settings, "overlay_bg_opacity");
         data->custom_width       = (uint32_t)obs_data_get_int(settings, "overlay_custom_width");
         data->auto_clear_seconds = (int)obs_data_get_int(settings, "auto_clear_seconds");
@@ -733,33 +672,6 @@ static uint32_t translate_get_height(void *priv)
 
 // ── Properties panel ──────────────────────────────────────────────────────
 
-static bool on_clear_voice_cache_clicked(obs_properties_t *, obs_property_t *, void *priv)
-{
-    auto *data = static_cast<TranslateData *>(priv);
-    {
-        std::lock_guard<std::mutex> lock(data->result_mutex);
-        data->voice_cache.clear();
-        data->voice_cache.save(data->voice_cache_path);
-    }
-    blog(LOG_INFO, "[game-translator] voice cache cleared");
-    return false;
-}
-
-static bool on_tts_provider_modified(obs_properties_t *props,
-                                      obs_property_t *,
-                                      obs_data_t *settings)
-{
-    const char *tts = obs_data_get_string(settings, "tts_provider");
-    bool is_gemini = (strcmp(tts, "gemini") == 0);
-
-    obs_property_t *repl = obs_properties_get(props, "replicate_api_key");
-    obs_property_t *gem  = obs_properties_get(props, "gemini_api_key");
-    if (repl) obs_property_set_visible(repl, !is_gemini);
-    if (gem)  obs_property_set_visible(gem,  is_gemini);
-
-    return true;
-}
-
 static obs_properties_t *translate_get_properties(void *priv)
 {
     obs_properties_t *props = obs_properties_create();
@@ -814,22 +726,8 @@ static obs_properties_t *translate_get_properties(void *priv)
                             OBS_TEXT_MULTILINE);
 
     // Voice (F8) settings
-    obs_property_t *tts_list = obs_properties_add_list(
-        props, "tts_provider", obs_module_text("TTSProvider"),
-        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    obs_property_list_add_string(tts_list, obs_module_text("TTSProvider.Replicate"), "replicate");
-    obs_property_list_add_string(tts_list, obs_module_text("TTSProvider.Gemini"),    "gemini");
-    obs_property_set_modified_callback(tts_list, on_tts_provider_modified);
-
-    obs_properties_add_text(props, "replicate_api_key",
-                            obs_module_text("ReplicateAPIKey"),
-                            OBS_TEXT_PASSWORD);
-    obs_properties_add_text(props, "gemini_api_key",
-                            obs_module_text("GeminiAPIKey"),
-                            OBS_TEXT_PASSWORD);
-    obs_properties_add_button(props, "clear_voice_cache",
-                              obs_module_text("ClearVoiceCache"),
-                              on_clear_voice_cache_clicked);
+    obs_properties_add_text(props, "tts_url", obs_module_text("TTSUrl"),
+                            OBS_TEXT_DEFAULT);
 
     return props;
 }
@@ -851,7 +749,7 @@ static void trigger_translate(TranslateData *data)
             std::lock_guard<std::mutex> lock(data->result_mutex);
             api_key = data->api_key;
         }
-        std::vector<uint8_t> jpeg = capture_source_frame(data);
+        std::vector<uint8_t> jpeg = capture_source_frame(data, 480, 50);
         if (jpeg.empty()) {
             blog(LOG_WARNING, "[game-translator] 帧捕获失败，请确认捕获源正在运行");
             return;
@@ -868,33 +766,26 @@ static void trigger_voice(TranslateData *data)
 
     data->loading_error.store(false);
 
-    std::string api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider;
+    std::string tts_url;
     {
         std::lock_guard<std::mutex> lock(data->result_mutex);
-        api_key           = data->api_key;
-        llm_provider      = data->llm_provider;
-        replicate_api_key = data->replicate_api_key;
-        gemini_api_key    = data->gemini_api_key;
-        tts_provider      = data->tts_provider;
+        tts_url = data->tts_url;
     }
 
-    bool is_gemini = (tts_provider == "gemini");
-    const std::string &tts_key = is_gemini ? gemini_api_key : replicate_api_key;
-
-    if (api_key.empty() || tts_key.empty()) {
-        blog(LOG_WARNING, "[game-translator] voice: API Key 或 TTS API Key 未配置");
+    if (tts_url.empty()) {
+        blog(LOG_WARNING, "[game-translator] voice: TTS 服务地址未配置");
         return;
     }
 
     if (data->target_source_name.empty()) {
         data->voice_capture_requested.store(true);
     } else {
-        std::vector<uint8_t> jpeg = capture_source_frame(data);
+        std::vector<uint8_t> jpeg = capture_source_frame(data, VOICE_MAX_WIDTH, VOICE_QUALITY);
         if (jpeg.empty()) {
             blog(LOG_WARNING, "[game-translator] voice: 帧捕获失败");
             return;
         }
-        start_voice_worker(data, std::move(jpeg), api_key, llm_provider, replicate_api_key, gemini_api_key, tts_provider);
+        start_voice_worker(data, std::move(jpeg), tts_url);
     }
 }
 
